@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections import defaultdict
 from collections.abc import Hashable, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
@@ -293,6 +294,21 @@ def merge_collected(
                 # OK throwing away variable without an index in favor of
                 # indexed variables, without even checking if values match?
                 variable, index = indexed_elements[0]
+                # Measurement prototype for indexed vs unindexed coordinate values.
+                check_mode = os.environ.get("XARRAY_PROTOTYPE_MERGE_CHECK")
+                if check_mode in {"raise", "warn"} and compat != "override":
+                    for other_variable, other_index in elements_list:
+                        if other_index is None:
+                            try:
+                                unique_variable(name, [variable, other_variable], compat)
+                            except MergeError:
+                                message = (
+                                    "conflicting values on objects to be combined "
+                                    f"for coordinate {name!r}"
+                                )
+                                if check_mode == "raise":
+                                    raise MergeError(message) from None
+                                emit_user_level_warning(message, FutureWarning)
                 for other_var, other_index in indexed_elements[1:]:
                     if not indexes_equal(
                         index, other_index, variable, other_var, index_cmp_cache
