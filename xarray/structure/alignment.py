@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import operator
+import os
 from collections import defaultdict
 from collections.abc import Callable, Hashable, Iterable, Mapping
 from contextlib import suppress
@@ -604,6 +605,26 @@ class Aligner(Generic[T_Alignable]):
                 # add the aligned index if it relates to unindexed dimensions in obj
                 dims = {d for var in aligned_idx_vars.values() for d in var.dims}
                 if dims <= set(obj.dims):
+                    # Measurement prototype for indexed vs unindexed coordinate values.
+                    check_mode = os.environ.get("XARRAY_PROTOTYPE_MERGE_CHECK")
+                    if check_mode in {"raise", "warn"} and self.join != "override":
+                        obj_vars = getattr(obj, "variables", None)
+                        if obj_vars is None:
+                            obj_vars = obj.coords.variables
+                        for name, var in aligned_idx_vars.items():
+                            if (
+                                name in obj_vars
+                                and name not in obj.xindexes
+                                and obj_vars[name].dims == var.dims
+                                and not obj_vars[name].equals(var)
+                            ):
+                                message = (
+                                    "conflicting values on objects to be combined "
+                                    f"for coordinate {name!r}"
+                                )
+                                if check_mode == "raise":
+                                    raise AlignmentError(message)
+                                emit_user_level_warning(message, FutureWarning)
                     obj_idx = aligned_idx
 
             if obj_idx is not None:

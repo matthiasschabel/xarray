@@ -4,6 +4,7 @@ import pytest
 
 import xarray as xr
 from xarray.core.coordinates import Coordinates
+from xarray.structure.alignment import AlignmentError
 from xarray.structure.merge import MergeError
 from xarray.tests.indexes import ScalarIndex
 
@@ -17,10 +18,12 @@ def check_mode(request, monkeypatch):
     return request.param
 
 
-def assert_indexed_value_wins(operation, check_mode, coordinate, value):
+def assert_indexed_value_wins(
+    operation, check_mode, coordinate, value, error_type=MergeError
+):
     message = f"conflicting values on objects to be combined for coordinate '{coordinate}'"
     if check_mode == "raise":
-        with pytest.raises(MergeError, match=message):
+        with pytest.raises(error_type, match=message):
             operation()
     elif check_mode == "warn":
         with pytest.warns(FutureWarning, match=message):
@@ -34,8 +37,8 @@ def assert_indexed_value_wins(operation, check_mode, coordinate, value):
 
 
 @pytest.mark.parametrize("reverse", [False, True])
-@pytest.mark.parametrize("merge", [False, True])
-def test_scalar_index_conflict(check_mode, reverse, merge):
+@pytest.mark.parametrize("operation_name", ["add", "merge", "align"])
+def test_scalar_index_conflict(check_mode, reverse, operation_name):
     indexed = xr.DataArray([1, 2], dims="x", coords={"tag": 10}, name="a").set_xindex(
         "tag", ScalarIndex
     )
@@ -43,9 +46,15 @@ def test_scalar_index_conflict(check_mode, reverse, merge):
     left, right = (plain, indexed) if reverse else (indexed, plain)
 
     def operation():
-        return xr.merge([left, right]) if merge else left + right
+        if operation_name == "merge":
+            return xr.merge([left, right])
+        if operation_name == "align":
+            return xr.align(left, right, join="exact")[1]
+        return left + right
 
-    assert_indexed_value_wins(operation, check_mode, "tag", 10)
+    assert_indexed_value_wins(
+        operation, check_mode, "tag", 10, error_type=AlignmentError
+    )
 
 
 @pytest.mark.parametrize("reverse", [False, True])

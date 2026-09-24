@@ -298,7 +298,7 @@ def merge_collected(
                 check_mode = os.environ.get("XARRAY_PROTOTYPE_MERGE_CHECK")
                 if check_mode in {"raise", "warn"} and compat != "override":
                     for other_variable, other_index in elements_list:
-                        if other_index is None:
+                        if other_index is None and other_variable.dims == variable.dims:
                             try:
                                 unique_variable(name, [variable, other_variable], compat)
                             except MergeError:
