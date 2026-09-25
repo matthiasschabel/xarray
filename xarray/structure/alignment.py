@@ -6,7 +6,7 @@ from collections import defaultdict
 from collections.abc import Callable, Hashable, Iterable, Mapping
 from contextlib import suppress
 from itertools import starmap
-from typing import TYPE_CHECKING, Any, Final, Generic, TypeVar, get_args, overload
+from typing import TYPE_CHECKING, Any, Final, Generic, TypeVar, cast, get_args, overload
 
 import numpy as np
 import pandas as pd
@@ -172,6 +172,7 @@ class Aligner(Generic[T_Alignable]):
     aligned_index_vars: dict[MatchingIndexKey, dict[Hashable, Variable]]
     reindex: dict[MatchingIndexKey, bool]
     keep_original_indexes: set[MatchingIndexKey]
+    shadowed_keys: set[MatchingIndexKey]
     reindex_kwargs: dict[str, Any]
     unindexed_dim_sizes: dict[Hashable, set]
     new_indexes: Indexes[Index]
@@ -227,6 +228,7 @@ class Aligner(Generic[T_Alignable]):
         self.aligned_index_vars = {}
         self.reindex = {}
         self.keep_original_indexes = set()
+        self.shadowed_keys = set()
 
         self.results = tuple()
 
@@ -411,29 +413,6 @@ class Aligner(Generic[T_Alignable]):
             aligned_indexes[key] = idx
             aligned_index_vars[key] = idx_vars
 
-            for name, var in idx_vars.items():
-                if name in new_indexes:
-                    other_idx = new_indexes[name]
-                    other_var = new_index_vars[name]
-                    # `idx` and `other_idx` may be genuinely equal (e.g., a
-                    # multi-dimensional CoordinateTransformIndex covering the same
-                    # grid) yet fall into different `MatchingIndexKey` groups because
-                    # their associated coordinate variables have a different `dims`
-                    # order (e.g. one object was transposed). Only raise once we know
-                    # they are not actually equal.
-                    if not indexes_all_equal(
-                        [(idx, {name: var}), (other_idx, {name: other_var})],
-                        self.exclude_dims,
-                    ):
-                        raise AlignmentError(
-                            f"cannot align objects on coordinate {name!r} because of conflicting indexes\n"
-                            f"first index: {idx!r}\nsecond index: {other_idx!r}\n"
-                            f"first variable: {var!r}\nsecond variable: {other_var!r}\n"
-                        )
-                    continue
-                new_indexes[name] = idx
-                new_index_vars[name] = var
-
         for key, matching_indexes in self.all_indexes.items():
             matching_index_vars = self.all_index_vars[key]
             dims = {d for coord in matching_index_vars[0].values() for d in coord.dims}
@@ -513,6 +492,139 @@ class Aligner(Generic[T_Alignable]):
                 index_vars = self.index_vars[key]
                 update_dicts(key, idx, index_vars, False)
 
+        if self.join != "override" and not self.indexes:
+            for superset_key in self.all_indexes:
+                owners = [
+                    i
+                    for i, matching in enumerate(self.objects_matching_indexes)
+                    if superset_key in matching
+                ]
+                subset_objects = [
+                    (i, key)
+                    for i, matching in enumerate(self.objects_matching_indexes)
+                    for key in matching
+                    if i not in owners and set(key[0]) < set(superset_key[0])
+                ]
+                if not subset_objects:
+                    continue
+
+                joined_index = aligned_indexes[superset_key]
+                targets_by_key: dict[MatchingIndexKey, Index] = {}
+                subset_owner_by_key: dict[MatchingIndexKey, int] = {}
+                # The ordinary path above joins matching superset indexes first.
+                # Visit earlier subsets last for left joins so the first object's
+                # labels win; visit later subsets last for right joins.
+                if self.join == "left":
+                    subset_objects.reverse()
+                pivot = owners[0] if self.join == "left" else owners[-1]
+                for i, key in subset_objects:
+                    other_indexes = {
+                        name: self.objects_matching_indexes[i][key]
+                        for name, _ in key[0]
+                    }
+                    how = cast(JoinOptions, self.join)
+                    if (how == "left" and i < pivot) or (how == "right" and i > pivot):
+                        how = "right"
+                    elif how in ("left", "right"):
+                        how = "left"
+                    result = joined_index.join_overlapping(other_indexes, how=how)
+                    if result is None:
+                        break
+                    joined_index, targets = result
+                    if set(targets) != set(other_indexes):
+                        raise ValueError(
+                            "join_overlapping must return target indexes for every "
+                            "overlapping coordinate"
+                        )
+                    names = [name for name, _ in key[0]]
+                    target = targets[names[0]]
+                    if any(targets[name] is not target for name in names[1:]):
+                        raise ValueError(
+                            "join_overlapping must return one target index per "
+                            "subset index group"
+                        )
+                    targets_by_key[key] = target
+                    subset_owner_by_key[key] = i
+                else:
+                    # Earlier calls may have produced targets for intermediate
+                    # labels. Ask the final superset index for each subset's
+                    # target so every object reindexes to the same labels.
+                    keys_to_refresh = (
+                        subset_owner_by_key.items() if len(subset_objects) > 1 else ()
+                    )
+                    for key, i in keys_to_refresh:
+                        other_indexes = {
+                            name: self.objects_matching_indexes[i][key]
+                            for name, _ in key[0]
+                        }
+                        final_result = joined_index.join_overlapping(
+                            other_indexes, how="left"
+                        )
+                        if final_result is None:
+                            raise ValueError(
+                                "join_overlapping must return targets for the joined index"
+                            )
+                        _, final_targets = final_result
+                        if set(final_targets) != set(other_indexes):
+                            raise ValueError(
+                                "join_overlapping must return target indexes for every "
+                                "overlapping coordinate"
+                            )
+                        names = [name for name, _ in key[0]]
+                        target = final_targets[names[0]]
+                        if any(final_targets[name] is not target for name in names[1:]):
+                            raise ValueError(
+                                "join_overlapping must return one target index per "
+                                "subset index group"
+                            )
+                        targets_by_key[key] = target
+                    self.shadowed_keys.update(targets_by_key)
+                    targets_by_key[superset_key] = joined_index
+                    for key, target in targets_by_key.items():
+                        index_vars = target.create_variables(self.all_index_vars[key][0])
+                        dims = {
+                            d for coord in index_vars.values() for d in coord.dims
+                        }
+                        need_reindex = self._need_reindex(
+                            dims,
+                            [(target, index_vars)]
+                            + list(
+                                zip(
+                                    self.all_indexes[key],
+                                    self.all_index_vars[key],
+                                    strict=True,
+                                )
+                            ),
+                        )
+                        if self.join == "exact" and need_reindex:
+                            raise AlignmentError(
+                                "cannot align objects with join='exact' where "
+                                "index/labels/sizes are not equal along overlapping coordinates"
+                            )
+                        update_dicts(key, target, index_vars, need_reindex)
+
+        for key, idx in aligned_indexes.items():
+            if key in self.shadowed_keys:
+                continue
+            for name, var in aligned_index_vars[key].items():
+                if name in new_indexes:
+                    other_idx = new_indexes[name]
+                    other_var = new_index_vars[name]
+                    # Differing dimension order can produce distinct keys for
+                    # equivalent indexes over the same coordinates.
+                    if not indexes_all_equal(
+                        [(idx, {name: var}), (other_idx, {name: other_var})],
+                        self.exclude_dims,
+                    ):
+                        raise AlignmentError(
+                            f"cannot align objects on coordinate {name!r} because of conflicting indexes\n"
+                            f"first index: {idx!r}\nsecond index: {other_idx!r}\n"
+                            f"first variable: {var!r}\nsecond variable: {other_var!r}\n"
+                        )
+                    continue
+                new_indexes[name] = idx
+                new_index_vars[name] = var
+
         self.aligned_indexes = aligned_indexes
         self.aligned_index_vars = aligned_index_vars
         self.reindex = reindex
@@ -546,6 +658,7 @@ class Aligner(Generic[T_Alignable]):
             for key, aligned_idx in self.aligned_indexes.items():
                 obj_idx = matching_indexes.get(key)
                 if obj_idx is not None:
+                    obj_idx.check_override(aligned_idx)
                     for name, var in self.aligned_index_vars[key].items():
                         new_indexes[name] = aligned_idx
                         new_variables[name] = var.copy(deep=self.copy)
@@ -596,6 +709,8 @@ class Aligner(Generic[T_Alignable]):
         new_variables = {}
 
         for key, aligned_idx in self.aligned_indexes.items():
+            if key in self.shadowed_keys:
+                continue
             aligned_idx_vars = self.aligned_index_vars[key]
             obj_idx = matching_indexes.get(key)
             obj_idx_vars = matching_index_vars.get(key)
@@ -619,6 +734,16 @@ class Aligner(Generic[T_Alignable]):
                     new_idx_vars = {
                         k: v.copy(deep=self.copy) for k, v in aligned_idx_vars.items()
                     }
+                obj_coords: Any = getattr(obj, "coords", obj)
+                unindexed_vars = {
+                    name: obj_coords.variables[name]
+                    for name, var in new_idx_vars.items()
+                    if name in obj_coords.variables
+                    and name not in obj.xindexes
+                    and obj_coords.variables[name].dims == var.dims
+                }
+                if unindexed_vars:
+                    new_idx.check_unindexed_coord_conflicts(unindexed_vars)
                 new_indexes.update(dict.fromkeys(new_idx_vars, new_idx))
                 new_variables.update(new_idx_vars)
 
@@ -672,7 +797,7 @@ class Aligner(Generic[T_Alignable]):
 
         if self.join == "override":
             self.override_indexes()
-        elif self.join == "exact" and not self.copy:
+        elif self.join == "exact" and not self.copy and not self.shadowed_keys:
             self.results = self.objects
         else:
             self.reindex_all()
@@ -814,7 +939,8 @@ def align(
         In either case, new xarray objects are always returned.
     indexes : dict-like, optional
         Any indexes explicitly provided with the `indexes` argument should be
-        used in preference to the aligned indexes.
+        used in preference to the aligned indexes. Custom overlapping-index
+        joins are not applied when explicit indexes are supplied.
     exclude : str, iterable of hashable or None, optional
         Dimensions that must be excluded from alignment
     fill_value : scalar or dict-like, optional

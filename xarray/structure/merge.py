@@ -293,6 +293,13 @@ def merge_collected(
                 # OK throwing away variable without an index in favor of
                 # indexed variables, without even checking if values match?
                 variable, index = indexed_elements[0]
+                unindexed_vars = {
+                    name: other_var
+                    for other_var, other_index in elements_list
+                    if other_index is None and other_var.dims == variable.dims
+                }
+                if unindexed_vars:
+                    index.check_unindexed_coord_conflicts(unindexed_vars)
                 for other_var, other_index in indexed_elements[1:]:
                     if not indexes_equal(
                         index, other_index, variable, other_var, index_cmp_cache
