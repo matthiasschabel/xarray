@@ -557,6 +557,8 @@ New Features
   By `Max Jones <https://github.com/maxrjones>`_ and
   `Tom Nicholas <https://github.com/TomNicholas>`_.
 
+- Custom indexes can implement :py:meth:`Index.swap_dims` to stay attached to
+  all their coordinates when :py:meth:`Dataset.swap_dims` renames a dimension.
 - Added `PyArrowCapsule interface <https://arrow.apache.org/docs/format/CDataInterface/PyCapsuleInterface.html#arrow-pycapsule-interface>`_
   to :py:class:`DataArray` (``__arrow_c_schema__`` and ``__arrow_c_stream__``), enabling near zero-copy
   export to pyarrow, polars or duckdb (:pull:`11338`).
@@ -680,6 +682,11 @@ Bug Fixes
   :py:func:`~xarray.open_mfdataset` when it is given a list or tuple of paths,
   instead of reporting that no IO backend matched the input (:issue:`6510`).
   By `NoiceHex <https://github.com/NoiceHax>`_.
+
+- :py:meth:`Dataset.swap_dims` now handles indexes per index, keeping all
+  coordinates of an unaffected index and removing an affected index from all
+  its coordinates unless it supports the swap. This fixes split indexes
+  and indexes retained with stale dimensions (:issue:`11099`, :issue:`8914`).
 - Fix async zarr tests using ``wraps`` with ``autospec=True`` on async methods,
   which caused ``AsyncMock`` objects to leak through instead of real array data
   (:pull:`11232`).
