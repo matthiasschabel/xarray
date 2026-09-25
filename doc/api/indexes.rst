@@ -75,6 +75,7 @@ The Index base class for building custom indexes:
    Index.reindex_like
    Index.equals
    Index.roll
+   Index.swap_dims
    Index.rename
    Index.copy
 
