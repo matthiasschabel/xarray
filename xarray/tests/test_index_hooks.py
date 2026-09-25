@@ -85,7 +85,11 @@ class TwoCoordinateIndex(xr.Index):
         return result
 
     def join_overlapping(
-        self, other_indexes: Mapping[Hashable, xr.Index], how: JoinOptions
+        self,
+        other_indexes: Mapping[Hashable, xr.Index],
+        *,
+        other_variables: Mapping[Hashable, xr.Variable],
+        how: JoinOptions,
     ) -> tuple[xr.Index, Mapping[Hashable, xr.Index]] | None:
         axes = dict(self.axes)
         targets = {}
@@ -119,13 +123,33 @@ class GuardedIndex(TwoCoordinateIndex):
 
 class RefusingIndex(TwoCoordinateIndex):
     def join_overlapping(
-        self, other_indexes: Mapping[Hashable, xr.Index], how: JoinOptions
+        self,
+        other_indexes: Mapping[Hashable, xr.Index],
+        *,
+        other_variables: Mapping[Hashable, xr.Variable],
+        how: JoinOptions,
     ) -> tuple[TwoCoordinateIndex, Mapping[Hashable, xr.Index]]:
         raise ValueError("overlapping labels are unsupported")
 
 
 class NoOverlapHookIndex(TwoCoordinateIndex):
     join_overlapping = xr.Index.join_overlapping
+
+
+class AttributeCheckingIndex(TwoCoordinateIndex):
+    def join_overlapping(
+        self,
+        other_indexes: Mapping[Hashable, xr.Index],
+        *,
+        other_variables: Mapping[Hashable, xr.Variable],
+        how: JoinOptions,
+    ) -> tuple[xr.Index, Mapping[Hashable, xr.Index]] | None:
+        for name, variable in other_variables.items():
+            if variable.attrs.get("units") != "meters":
+                raise ValueError(f"incompatible units on {name!r}")
+        return super().join_overlapping(
+            other_indexes, other_variables=other_variables, how=how
+        )
 
 
 def make_array(
@@ -153,6 +177,62 @@ def test_broadcast_with_two_dimension_index() -> None:
     assert result.dims == ("y", "x", "channel")
     assert result.shape == (2, 3, 2)
     np.testing.assert_array_equal(result.x, [10, 20, 30])
+    assert result.xindexes["x"] is result.xindexes["y"]
+    assert isinstance(result.xindexes["x"], TwoCoordinateIndex)
+
+
+@pytest.mark.parametrize("as_dataset", [False, True])
+def test_broadcast_preserves_common_indexes(as_dataset: bool) -> None:
+    joint: xr.DataArray | xr.Dataset = make_array()
+    if as_dataset:
+        joint = joint.to_dataset(name="data")
+    other = xr.DataArray([1, 2], dims="channel")
+    first, second = xr.broadcast(joint, other)
+    for result in (first, second):
+        assert result.xindexes["x"] is result.xindexes["y"]
+        assert isinstance(result.xindexes["x"], TwoCoordinateIndex)
+    result = other.broadcast_like(joint)
+    assert isinstance(result.xindexes["x"], TwoCoordinateIndex)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_overlapping_equal_labels_replace_subset_index(reverse: bool) -> None:
+    joint = make_array()
+    plain = xr.DataArray(
+        np.ones((2, 3)),
+        dims=("y", "x"),
+        coords={"y": [0, 1], "x": [10, 20, 30]},
+    )
+    operands = (plain, joint) if reverse else (joint, plain)
+    for result in xr.align(*operands, copy=False):
+        assert result.xindexes["x"] is result.xindexes["y"]
+        assert isinstance(result.xindexes["x"], TwoCoordinateIndex)
+
+
+@pytest.mark.parametrize("operation", ["arithmetic", "ufunc", "where"])
+def test_overlapping_equal_labels_keep_index_in_operations(operation: str) -> None:
+    joint = make_array()
+    plain = xr.DataArray(
+        np.ones((2, 3)),
+        dims=("y", "x"),
+        coords={"y": [0, 1], "x": [10, 20, 30]},
+    )
+    if operation == "arithmetic":
+        result = plain + joint
+    elif operation == "ufunc":
+        result = xr.apply_ufunc(lambda a, b: a + b, plain, joint)
+    else:
+        result = xr.where(plain > 0, plain, joint)
+    assert result.xindexes["x"] is result.xindexes["y"]
+    assert isinstance(result.xindexes["x"], TwoCoordinateIndex)
+
+
+def test_overlapping_right_join_replaces_subset_index() -> None:
+    plain = make_plain([20, 30, 40])
+    joint = make_array()
+    for result in xr.align(plain, joint, join="right"):
+        assert result.xindexes["x"] is result.xindexes["y"]
+        assert isinstance(result.xindexes["x"], TwoCoordinateIndex)
 
 
 @pytest.mark.parametrize("reverse", [False, True])
@@ -200,6 +280,16 @@ def test_overlapping_index_refusal_propagates() -> None:
     )
     with pytest.raises(ValueError, match="overlapping labels are unsupported"):
         xr.align(joint, subset)
+
+
+def test_overlapping_join_receives_coordinate_attributes() -> None:
+    joint = make_array(AttributeCheckingIndex)
+    plain = make_plain([10, 20, 30])
+    plain.coords["x"].attrs["units"] = "meters"
+    assert isinstance(xr.align(joint, plain)[1].xindexes["x"], AttributeCheckingIndex)
+    plain.coords["x"].attrs["units"] = "seconds"
+    with pytest.raises(ValueError, match="incompatible units on 'x'"):
+        xr.align(joint, plain)
 
 
 def test_overlapping_index_without_hook_keeps_existing_failure() -> None:
@@ -347,6 +437,22 @@ def test_merge_checks_unindexed_coordinate_before_replacement() -> None:
 def test_override_can_be_refused_by_replaced_index() -> None:
     first = make_array(GuardedIndex)
     second = first.isel(x=slice(None, None, -1))
+    with pytest.raises(ValueError, match="index cannot be overridden"):
+        xr.align(first, second, join="override")
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_override_consults_overlapping_superset_in_both_orders(reverse: bool) -> None:
+    joint = make_array(GuardedIndex)
+    plain = make_plain([10, 20, 30])
+    operands = (plain, joint) if reverse else (joint, plain)
+    with pytest.raises(ValueError, match="index cannot be overridden"):
+        xr.align(*operands, join="override")
+
+
+def test_override_consults_first_superset_index() -> None:
+    first = make_array(GuardedIndex)
+    second = make_array(x_values=[20, 30, 40])
     with pytest.raises(ValueError, match="index cannot be overridden"):
         xr.align(first, second, join="override")
 

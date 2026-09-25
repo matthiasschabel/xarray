@@ -522,12 +522,15 @@ class Aligner(Generic[T_Alignable]):
                         name: self.objects_matching_indexes[i][key]
                         for name, _ in key[0]
                     }
+                    other_variables = self.objects_matching_index_vars[i][key]
                     how = cast(JoinOptions, self.join)
                     if (how == "left" and i < pivot) or (how == "right" and i > pivot):
                         how = "right"
                     elif how in ("left", "right"):
                         how = "left"
-                    result = joined_index.join_overlapping(other_indexes, how=how)
+                    result = joined_index.join_overlapping(
+                        other_indexes, other_variables=other_variables, how=how
+                    )
                     if result is None:
                         break
                     joined_index, targets = result
@@ -557,8 +560,9 @@ class Aligner(Generic[T_Alignable]):
                             name: self.objects_matching_indexes[i][key]
                             for name, _ in key[0]
                         }
+                        other_variables = self.objects_matching_index_vars[i][key]
                         final_result = joined_index.join_overlapping(
-                            other_indexes, how="left"
+                            other_indexes, other_variables=other_variables, how="left"
                         )
                         if final_result is None:
                             raise ValueError(
@@ -647,6 +651,19 @@ class Aligner(Generic[T_Alignable]):
                     f"because of conflicting dimension sizes: {sizes!r}" + add_err_msg
                 )
 
+    def check_override_indexes(self) -> None:
+        # An overlapping index may remain on an object even when a different
+        # index group supplies the labels for the same coordinates.
+        for i, matching in enumerate(self.objects_matching_indexes):
+            for key, idx in matching.items():
+                names = {name for name, _ in key[0]}
+                for j, other_matching in enumerate(self.objects_matching_indexes):
+                    if i == j:
+                        continue
+                    for other_key, other_idx in other_matching.items():
+                        if names.intersection(name for name, _ in other_key[0]):
+                            idx.check_override(other_idx)
+
     def override_indexes(self) -> None:
         objects = list(self.objects)
 
@@ -658,7 +675,6 @@ class Aligner(Generic[T_Alignable]):
             for key, aligned_idx in self.aligned_indexes.items():
                 obj_idx = matching_indexes.get(key)
                 if obj_idx is not None:
-                    obj_idx.check_override(aligned_idx)
                     for name, var in self.aligned_index_vars[key].items():
                         new_indexes[name] = aligned_idx
                         new_variables[name] = var.copy(deep=self.copy)
@@ -792,6 +808,8 @@ class Aligner(Generic[T_Alignable]):
 
         self.find_matching_indexes()
         self.find_matching_unindexed_dims()
+        if self.join == "override":
+            self.check_override_indexes()
         self.align_indexes()
         self.assert_unindexed_dim_sizes_equal()
 
@@ -1259,19 +1277,24 @@ def reindex_like(
 
 def _get_broadcast_dims_map_common_coords(args, exclude):
     common_coords = {}
+    common_indexes = {}
     dims_map = {}
     for arg in args:
         for dim in arg.dims:
             if dim not in dims_map and dim not in exclude:
                 dims_map[dim] = arg.sizes[dim]
                 if dim in arg._indexes:
-                    common_coords.update(arg.xindexes.get_all_coords(dim))
+                    coords = arg.xindexes.get_all_coords(dim)
+                    common_coords.update(coords)
+                    common_indexes.update(
+                        {name: arg._indexes[name] for name in coords}
+                    )
 
-    return dims_map, common_coords
+    return dims_map, common_coords, common_indexes
 
 
 def _broadcast_helper(
-    arg: T_Alignable, exclude, dims_map, common_coords
+    arg: T_Alignable, exclude, dims_map, common_coords, common_indexes
 ) -> T_Alignable:
     from xarray.core.dataarray import DataArray
     from xarray.core.dataset import Dataset
@@ -1288,17 +1311,20 @@ def _broadcast_helper(
 
     def _broadcast_array(array: T_DataArray) -> T_DataArray:
         data = _set_dims(array.variable)
-        coords = dict(array.coords)
+        coords = dict(array._coords)
         coords.update(common_coords)
-        return array.__class__(
-            data, coords, data.dims, name=array.name, attrs=array.attrs
-        )
+        indexes = dict(array._indexes)
+        indexes.update(common_indexes)
+        return array._replace(data, coords, indexes=indexes)
 
     def _broadcast_dataset(ds: T_Dataset) -> T_Dataset:
         data_vars = {k: _set_dims(ds.variables[k]) for k in ds.data_vars}
-        coords = dict(ds.coords)
+        coords = {name: ds._variables[name] for name in ds._coord_names}
         coords.update(common_coords)
-        return ds.__class__(data_vars, coords, ds.attrs)
+        indexes = dict(ds._indexes)
+        indexes.update(common_indexes)
+        variables = {**data_vars, **coords}
+        return ds._replace_with_new_dims(variables, set(coords), indexes=indexes)
 
     # remove casts once https://github.com/python/mypy/issues/12800 is resolved
     if isinstance(arg, DataArray):
@@ -1433,7 +1459,12 @@ def broadcast(
         exclude = set()
     args = align(*args, join="outer", copy=False, exclude=exclude)
 
-    dims_map, common_coords = _get_broadcast_dims_map_common_coords(args, exclude)
-    result = [_broadcast_helper(arg, exclude, dims_map, common_coords) for arg in args]
+    dims_map, common_coords, common_indexes = _get_broadcast_dims_map_common_coords(
+        args, exclude
+    )
+    result = [
+        _broadcast_helper(arg, exclude, dims_map, common_coords, common_indexes)
+        for arg in args
+    ]
 
     return tuple(result)
