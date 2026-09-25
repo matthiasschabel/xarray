@@ -458,6 +458,26 @@ class Index:
         """
         return None
 
+    def swap_dims(self, dims_dict: Mapping[Any, Hashable]) -> Self | None:
+        """Update this index for swapped dimensions.
+
+        Called by :py:meth:`Dataset.swap_dims` with the effective old-to-new
+        dimension mapping when this index uses a swapped dimension. Subclasses
+        may return a new index for the renamed dimensions to keep it with all
+        its coordinates. The default returns ``None``, which drops the index.
+
+        Parameters
+        ----------
+        dims_dict : dict-like
+            Mapping of old dimension names to new dimension names.
+
+        Returns
+        -------
+        swapped : Index or None
+            A new index for the swapped dimensions, or ``None`` to drop it.
+        """
+        return None
+
     def rename(
         self,
         name_dict: Mapping[Any, Hashable],

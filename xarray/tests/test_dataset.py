@@ -336,6 +336,20 @@ class AccessibleAsDuckArrayDataStore(backends.InMemoryDataStore):
         return {k: lazy_accessible(k, v) for k, v in self._variables.items()}
 
 
+class SwapDimsIndex(Index):
+    def __init__(self, dims):
+        self.dims = dims
+
+    @classmethod
+    def from_variables(cls, variables, *, options):
+        return cls(tuple(var.dims[0] for var in variables.values()))
+
+
+class SwappableDimsIndex(SwapDimsIndex):
+    def swap_dims(self, dims_dict):
+        return type(self)(tuple(dims_dict.get(dim, dim) for dim in self.dims))
+
+
 class TestDataset:
     def test_repr(self) -> None:
         data = create_test_data(seed=123, use_extension_array=True)
@@ -3747,6 +3761,114 @@ class TestDataset:
         assert isinstance(actual.variables["y"], IndexVariable)
         assert isinstance(actual.variables["x"], Variable)
         assert actual.xindexes["y"].equals(expected.xindexes["y"])
+
+    def test_swap_dims_drops_spanning_index(self) -> None:
+        original = Dataset(
+            coords={
+                "a": ("x", [1, 2]),
+                "b": ("y", [3, 4]),
+                "c": ("x", [5, 6]),
+            }
+        ).set_xindex(["a", "b"], SwapDimsIndex)
+
+        result = original.swap_dims(x="c")
+
+        _assert_internal_invariants(result, check_default_indexes=False)
+        assert set(result.xindexes) == {"c"}
+        assert isinstance(result.xindexes["c"], PandasIndex)
+        assert result.xindexes["c"].dim == "c"
+        assert result["a"].dims == ("c",)
+        assert result["b"].dims == ("y",)
+
+    def test_swap_dims_keeps_spanning_index_with_hook(self) -> None:
+        original = Dataset(
+            coords={
+                "a": ("x", [1, 2]),
+                "b": ("y", [3, 4]),
+                "c": ("x", [5, 6]),
+            }
+        ).set_xindex(["a", "b"], SwappableDimsIndex)
+
+        result = original.swap_dims(x="c")
+
+        _assert_internal_invariants(result, check_default_indexes=False)
+        assert result.xindexes["a"] is result.xindexes["b"]
+        assert result.xindexes["a"] is not original.xindexes["a"]
+        assert result.xindexes["a"].dims == ("c", "y")
+        assert result["a"].dims == ("c",)
+        assert result["b"].dims == ("y",)
+        assert isinstance(result.xindexes["c"], PandasIndex)
+
+    def test_swap_dims_kept_index_owns_promoted_coordinate(self) -> None:
+        original = Dataset(coords={"c": ("x", [5, 6]), "b": ("y", [3, 4])}).set_xindex(
+            ["c", "b"], SwappableDimsIndex
+        )
+
+        result = original.swap_dims(x="c")
+
+        _assert_internal_invariants(result, check_default_indexes=False)
+        assert result.xindexes["c"] is result.xindexes["b"]
+        assert isinstance(result.xindexes["c"], SwappableDimsIndex)
+        assert result.xindexes["c"].dims == ("c", "y")
+        assert result["c"].dims == ("c",)
+
+    def test_swap_dims_keeps_unaffected_multi_coordinate_index(self) -> None:
+        original = Dataset(
+            coords={
+                "a": ("y", [1, 2]),
+                "b": ("y", [3, 4]),
+                "d": ("y", [7, 8]),
+                "c": ("x", [5, 6]),
+            }
+        ).set_xindex(["a", "b", "d"], SwapDimsIndex)
+
+        result = original.swap_dims(x="c")
+
+        _assert_internal_invariants(result, check_default_indexes=False)
+        for name in ("a", "b", "d"):
+            assert result.xindexes[name] is original.xindexes[name]
+            assert result[name].dims == ("y",)
+
+    def test_swap_dims_reindexes_promoted_coordinate(self) -> None:
+        original = Dataset(
+            coords={"x": [0, 1, 2], "column": ("x", [5, 6, 7])}
+        ).set_xindex("column")
+
+        result = original.swap_dims(x="column")
+
+        _assert_internal_invariants(result, check_default_indexes=False)
+        assert isinstance(result.xindexes["column"], PandasIndex)
+        assert result.xindexes["column"].dim == "column"
+        assert "x" not in result.xindexes
+
+    def test_swap_dims_identity_keeps_index(self) -> None:
+        original = Dataset(coords={"a": ("x", [1, 2]), "b": ("y", [3, 4])}).set_xindex(
+            ["a", "b"], SwapDimsIndex
+        )
+
+        result = original.swap_dims(x="x")
+
+        _assert_internal_invariants(result, check_default_indexes=False)
+        assert result.xindexes["a"] is original.xindexes["a"]
+        assert result.xindexes["b"] is original.xindexes["b"]
+
+    def test_swap_dims_drops_pandas_multiindex(self) -> None:
+        original = Dataset(
+            coords={
+                "x": [0, 1, 2],
+                "foo": ("x", ["a", "a", "b"]),
+                "bar": ("x", [1, 2, 1]),
+                "y": ("x", [4, 5, 6]),
+            }
+        ).set_index(x=["foo", "bar"])
+
+        result = original.swap_dims(x="y")
+
+        _assert_internal_invariants(result, check_default_indexes=False)
+        assert set(result.xindexes) == {"y"}
+        assert isinstance(result.xindexes["y"], PandasIndex)
+        for name in ("x", "foo", "bar"):
+            assert result[name].dims == ("y",)
 
     def test_expand_dims_error(self) -> None:
         original = Dataset(
