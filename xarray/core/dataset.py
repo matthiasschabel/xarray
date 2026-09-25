@@ -4450,6 +4450,9 @@ class Dataset(
     ) -> Self:
         """Returns a new object with swapped dimensions.
 
+        Indexes along a swapped dimension are removed from all their coordinates
+        unless the index implements :py:meth:`Index.swap_dims`.
+
         Parameters
         ----------
         dims_dict : dict-like
@@ -4524,6 +4527,7 @@ class Dataset(
                     f"variable along the old dimension {current_name!r}"
                 )
 
+        swapped = {old: new for old, new in dims_dict.items() if old != new}
         result_dims = {dims_dict.get(dim, dim) for dim in self.dims}
 
         coord_names = self._coord_names.copy()
@@ -4531,20 +4535,38 @@ class Dataset(
 
         variables: dict[Hashable, Variable] = {}
         indexes: dict[Hashable, Index] = {}
+        index_vars: dict[Hashable, Variable] = {}
+        for index, coords in self.xindexes.group_by_index():
+            if any(dim in swapped for var in coords.values() for dim in var.dims):
+                new_index = index.swap_dims(swapped)
+                if new_index is None:
+                    continue
+                renamed_coords = {}
+                for name, coord_var in coords.items():
+                    renamed_var = coord_var.copy(deep=False)
+                    renamed_var.dims = tuple(
+                        swapped.get(dim, dim) for dim in coord_var.dims
+                    )
+                    renamed_coords[name] = renamed_var
+                index_vars.update(new_index.create_variables(renamed_coords))
+            else:
+                new_index = index
+                index_vars.update(coords)
+            indexes.update(dict.fromkeys(coords, new_index))
+
         for current_name, current_variable in self.variables.items():
+            if current_name in index_vars:
+                variables[current_name] = index_vars[current_name]
+                continue
             dims = tuple(dims_dict.get(dim, dim) for dim in current_variable.dims)
             var: Variable
             if current_name in result_dims:
                 var = current_variable.to_index_variable()
                 var.dims = dims
-                if current_name in self._indexes:
-                    indexes[current_name] = self._indexes[current_name]
-                    variables[current_name] = var
-                else:
-                    index, index_vars = create_default_index_implicit(var)
-                    indexes.update(dict.fromkeys(index_vars, index))
-                    variables.update(index_vars)
-                    coord_names.update(index_vars)
+                index, default_index_vars = create_default_index_implicit(var)
+                indexes.update(dict.fromkeys(default_index_vars, index))
+                variables.update(default_index_vars)
+                coord_names.update(default_index_vars)
             else:
                 var = current_variable.to_base_variable()
                 var.dims = dims
