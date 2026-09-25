@@ -354,6 +354,41 @@ class Index:
         """
         raise NotImplementedError(f"{self!r} doesn't support re-indexing labels")
 
+    def check_unindexed_coord_conflicts(
+        self, variables: Mapping[Hashable, Variable]
+    ) -> None:
+        """Check unindexed coordinates before they are replaced by this index.
+
+        ``variables`` contains same-name, same-dimension coordinates that would
+        be overwritten during alignment or merge. Subclasses may raise an error
+        to reject the replacement. The default allows it.
+        """
+
+    def check_override(self, other: Index) -> None:
+        """Check whether this index may be replaced by ``other``.
+
+        Called by :py:func:`xarray.align` with ``join='override'`` before the
+        replacement. Subclasses may raise an error; the default allows it.
+        """
+
+    def join_overlapping(
+        self, other_indexes: Mapping[Hashable, Index], how: JoinOptions
+    ) -> tuple[Index, Mapping[Hashable, Index]] | None:
+        """Join this index with indexes covering a subset of its coordinates.
+
+        ``other_indexes`` maps each overlapping coordinate name to its index.
+        ``how`` uses this index as the left side and the subset indexes as the
+        right side. Return a joined index and target indexes keyed by the same
+        coordinate names, for reindexing the subset operand. The returned joined
+        index owns the result coordinates. When aligning more than two objects,
+        this method may be called again on the joined index with ``how='left'``
+        to obtain target indexes for the final labels. Overlapping joins are not
+        applied when ``indexes=`` is passed explicitly to :py:func:`xarray.align`.
+        Subclasses may raise to refuse the join. The default returns ``None``
+        and leaves alignment unchanged.
+        """
+        return None
+
     @overload
     def equals(self, other: Index) -> bool: ...
 
