@@ -6411,6 +6411,40 @@ class TestDataset:
         actual = data["a"].mean("x").to_dataset()
         assert_identical(actual, expected)
 
+    @pytest.mark.parametrize("method", ["mean", "quantile", "integrate"])
+    @pytest.mark.parametrize("with_unrelated_index", [False, True])
+    def test_reduce_drops_spanning_index(self, method, with_unrelated_index) -> None:
+        class CustomIndex(Index):
+            def equals(self, other, *, exclude=None):
+                return isinstance(other, CustomIndex)
+
+        spanning_index = CustomIndex()
+        unrelated_index = CustomIndex()
+        coords = {"x": ("x", [0.0, 1.0, 2.0]), "y": ("y", [3.0, 4.0])}
+        indexes = {"x": spanning_index, "y": spanning_index}
+        if with_unrelated_index:
+            coords["z"] = ("z", [5.0, 6.0])
+            indexes["z"] = unrelated_index
+        ds = Dataset(
+            {"a": (("x", "y"), np.arange(6).reshape(3, 2))},
+            coords=Coordinates(coords, indexes=indexes),
+        )
+
+        if method == "mean":
+            result = ds.mean("x")
+        elif method == "quantile":
+            result = ds.quantile(0.5, dim="x")
+        else:
+            result = ds.integrate("x")
+
+        _assert_internal_invariants(result, check_default_indexes=False)
+        assert "y" in result.coords
+        assert "x" not in result.xindexes
+        assert "y" not in result.xindexes
+        if with_unrelated_index:
+            assert result.xindexes["z"].equals(unrelated_index)
+            assert result["z"].variable.equals(ds["z"].variable)
+
     def test_mean_uint_dtype(self) -> None:
         data = xr.Dataset(
             {
