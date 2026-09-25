@@ -3420,9 +3420,13 @@ class Dataset(
             exclude = set(exclude)
         args = align(other, self, join="outer", copy=False, exclude=exclude)
 
-        dims_map, common_coords = _get_broadcast_dims_map_common_coords(args, exclude)
+        dims_map, common_coords, common_indexes = (
+            _get_broadcast_dims_map_common_coords(args, exclude)
+        )
 
-        return _broadcast_helper(args[1], exclude, dims_map, common_coords)
+        return _broadcast_helper(
+            args[1], exclude, dims_map, common_coords, common_indexes
+        )
 
     def _reindex_callback(
         self,
@@ -3457,8 +3461,14 @@ class Dataset(
 
         if not dim_pos_indexers:
             # fast path for no reindexing necessary
-            if set(new_indexes) - set(self._indexes):
-                # this only adds new indexes and their coordinate variables
+            if set(new_indexes) - set(self._indexes) or (
+                aligner.shadowed_keys
+                and any(
+                    self._indexes.get(name) is not idx
+                    for name, idx in new_indexes.items()
+                )
+            ):
+                # Overlapping joins can also replace an existing subset index.
                 reindexed = self._overwrite_indexes(new_indexes, new_variables)
             else:
                 reindexed = self.copy(deep=aligner.copy)
