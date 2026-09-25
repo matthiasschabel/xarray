@@ -4632,6 +4632,113 @@ class TestDataset:
         )
         assert_identical(expected2, actual2)
 
+    @pytest.mark.parametrize(
+        "incoming, expected_x, expected_v",
+        [
+            (
+                {"v": DataArray([10.0, 20.0, 30.0], dims="x", coords={"x": [1, 2, 3]})},
+                [0, 1, 2],
+                [np.nan, 10.0, 20.0],
+            ),
+            (
+                Dataset({"v": ("x", [10.0, 20.0, 30.0])}, coords={"x": [1, 2, 3]}),
+                [0, 1, 2],
+                [np.nan, 10.0, 20.0],
+            ),
+            (Dataset(coords={"x": [5, 6, 7]}), [0, 1, 2], None),
+            ({"x": ("x", [5, 6, 7])}, [5, 6, 7], None),
+            ({"x": DataArray([5, 6, 7], dims="x")}, [5, 6, 7], None),
+        ],
+    )
+    def test_update_index_alignment_and_replacement(
+        self, incoming, expected_x, expected_v
+    ) -> None:
+        ds = Dataset({"a": ("x", [1.0, 2.0, 3.0])}, coords={"x": [0, 1, 2]})
+
+        ds.update(incoming)
+
+        _assert_internal_invariants(ds, check_default_indexes=False)
+        np.testing.assert_array_equal(ds["x"], expected_x)
+        assert type(ds.xindexes["x"]) is PandasIndex
+        if expected_v is not None:
+            np.testing.assert_array_equal(ds["v"], expected_v)
+
+    @pytest.mark.parametrize(
+        "method", ["setitem", "update_mapping", "update_dataset", "assign"]
+    )
+    def test_update_keeps_custom_index(self, method) -> None:
+        class CustomIndex(Index):
+            def equals(self, other, *, exclude=None):
+                return isinstance(other, CustomIndex)
+
+        ds = Dataset(
+            {"a": ("x", [1.0, 2.0, 3.0])},
+            coords=Coordinates({"x": ("x", [0, 1, 2])}, indexes={"x": CustomIndex()}),
+        )
+        ds["x"].attrs["source"] = "base"
+        labelled = DataArray([10.0, 20.0, 30.0], dims="x", coords={"x": [0, 1, 2]})
+        labelled["x"].attrs["source"] = "incoming"
+
+        if method == "setitem":
+            ds["v"] = labelled
+        elif method == "update_mapping":
+            ds.update({"v": labelled})
+        elif method == "update_dataset":
+            ds.update(labelled.to_dataset(name="v"))
+        else:
+            ds = ds.assign(v=labelled)
+
+        _assert_internal_invariants(ds, check_default_indexes=False)
+        assert isinstance(ds.xindexes["x"], CustomIndex)
+        np.testing.assert_array_equal(ds["x"], [0, 1, 2])
+        assert ds["x"].attrs["source"] == "base"
+        np.testing.assert_array_equal(ds["v"], [10.0, 20.0, 30.0])
+
+    @pytest.mark.parametrize(
+        "incoming", [{"x": ("x", [5, 6, 7])}, {"x": DataArray([5, 6, 7], dims="x")}]
+    )
+    def test_update_explicitly_replaces_custom_index(self, incoming) -> None:
+        ds = Dataset(
+            {"a": ("x", [1.0, 2.0, 3.0])},
+            coords=Coordinates({"x": ("x", [0, 1, 2])}, indexes={"x": Index()}),
+        )
+
+        ds.update(incoming)
+
+        _assert_internal_invariants(ds, check_default_indexes=False)
+        np.testing.assert_array_equal(ds["x"], [5, 6, 7])
+        assert type(ds.xindexes["x"]) is PandasIndex
+
+    def test_update_dataset_coordinate_rejects_custom_index_mismatch(self) -> None:
+        ds = Dataset(
+            {"a": ("x", [1.0, 2.0, 3.0])},
+            coords=Coordinates({"x": ("x", [0, 1, 2])}, indexes={"x": Index()}),
+        )
+
+        with pytest.raises(AlignmentError, match="conflicting indexes"):
+            ds.update(Dataset(coords={"x": [5, 6, 7]}))
+
+    def test_update_keeps_all_coordinates_of_shared_index(self) -> None:
+        index = Index()
+        ds = Dataset(
+            {"v": (("x", "y"), [[1, 2], [3, 4]])},
+            coords=Coordinates(
+                {"a": ("x", [0, 1]), "b": ("y", [2, 3])},
+                indexes={"a": index, "b": index},
+            ),
+        )
+        incoming = Dataset(
+            {"new": ("x", [10, 20])},
+            coords=Coordinates({"a": ("x", [0, 1])}, indexes={}),
+        )
+
+        ds.update(incoming)
+
+        _assert_internal_invariants(ds, check_default_indexes=False)
+        assert ds.xindexes["a"] is index
+        assert ds.xindexes["b"] is index
+        np.testing.assert_array_equal(ds["new"], [10, 20])
+
     def test_getitem(self) -> None:
         data = create_test_data()
         assert isinstance(data["var1"], DataArray)

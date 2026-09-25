@@ -58,6 +58,9 @@ Bug Fixes
 - :py:meth:`Dataset.reduce`, :py:meth:`Dataset.quantile`, and
   :py:meth:`Dataset.integrate` now drop an index from all its coordinates when
   reducing away a dimension used by that index.
+- :py:meth:`Dataset.update` now preserves its existing index and coordinate
+  variables when aligned incoming data supplies the same indexed coordinates.
+  Explicit coordinate keys in a mapping still replace the index.
 - :py:meth:`Dataset.swap_dims` now handles indexes per index, keeping all
   coordinates of an unaffected index and removing an affected index from all
   its coordinates unless it supports the swap. This fixes split indexes
