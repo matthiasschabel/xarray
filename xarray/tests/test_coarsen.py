@@ -16,6 +16,128 @@ from xarray.tests import (
 )
 
 
+class JointIndex(xr.Index):
+    @classmethod
+    def from_variables(cls, variables, *, options):
+        index = cls()
+        index.dims = {dim for var in variables.values() for dim in var.dims}
+        return index
+
+
+class CoarsenGuardIndex(JointIndex):
+    def check_coarsen(self, windows):
+        raise ValueError("cannot coarsen dimensions owned by this index")
+
+
+@pytest.fixture(params=[DataArray, Dataset])
+def custom_index_obj(request):
+    obj = DataArray(
+        np.arange(64).reshape(4, 4, 4),
+        dims=("time", "x", "y"),
+        coords={"time": range(4), "x": range(4), "label": ("y", range(4))},
+        name="data",
+    ).drop_indexes("x")
+    if request.param is Dataset:
+        obj = obj.to_dataset()
+    return obj
+
+
+@pytest.mark.parametrize("coord_names", [["x"], ["x", "label"]])
+@pytest.mark.parametrize("dim", ["time", "x", "y"])
+@pytest.mark.parametrize(
+    "operation", ["mean", "reduce", "construct", "construct_kwargs"]
+)
+def test_coarsen_custom_index(custom_index_obj, coord_names, dim, operation):
+    obj = custom_index_obj.set_xindex(coord_names, JointIndex)
+    index = obj.xindexes["x"]
+
+    def coarsen(obj):
+        coarsened = obj.coarsen({dim: 2})
+        if operation == "reduce":
+            return coarsened.reduce(np.mean)
+        if operation == "construct":
+            return coarsened.construct({dim: (dim, "window")})
+        if operation == "construct_kwargs":
+            return coarsened.construct(**{dim: (dim, "window")})
+        return coarsened.mean()
+
+    actual = coarsen(obj)
+    expected = coarsen(custom_index_obj)
+    assert_allclose(actual, expected, check_default_indexes=False)
+    if dim not in index.dims:
+        for name in coord_names:
+            assert actual.xindexes[name] is index
+            assert_identical(actual.coords[name].variable, obj.coords[name].variable)
+    else:
+        assert all(idx is not index for idx in actual.xindexes.values())
+        if dim == "x" and operation in ("mean", "reduce"):
+            assert isinstance(actual.xindexes["x"], xr.indexes.PandasIndex)
+        else:
+            assert "x" not in actual.xindexes
+        if "label" in coord_names:
+            assert "label" not in actual.xindexes
+    if dim != "time":
+        assert actual.xindexes["time"] is obj.xindexes["time"]
+
+
+@pytest.mark.parametrize("dim", ["x", "y"])
+def test_coarsen_custom_index_preflight(custom_index_obj, dim):
+    obj = custom_index_obj.set_xindex(["x", "label"], CoarsenGuardIndex)
+    with pytest.raises(
+        ValueError, match="cannot coarsen dimensions owned by this index"
+    ):
+        obj.coarsen({dim: 2})
+
+    result = obj.coarsen(time=2).mean()
+    assert result.xindexes["x"] is obj.xindexes["x"]
+    assert result.xindexes["label"] is obj.xindexes["label"]
+
+
+def test_coarsen_custom_index_preflight_once(custom_index_obj, monkeypatch):
+    obj = custom_index_obj.set_xindex(["x", "label"], JointIndex)
+    obj = obj.drop_indexes("time").set_xindex("time", JointIndex)
+    calls = []
+    monkeypatch.setattr(
+        JointIndex, "check_coarsen", lambda self, windows: calls.append((self, windows))
+    )
+    windows = {"time": 2, "x": 2, "y": 2}
+
+    coarsened = obj.coarsen(windows)
+    assert len(calls) == 2
+    assert {id(index) for index, _ in calls} == {
+        id(index) for index in obj.xindexes.values()
+    }
+    assert all(checked_windows == windows for _, checked_windows in calls)
+    coarsened.mean()
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("operation", ["mean", "construct"])
+def test_coarsen_unindexed_coordinate(custom_index_obj, operation):
+    coarsened = custom_index_obj.coarsen(time=2)
+    if operation == "construct":
+        actual = coarsened.construct(time=("time", "window"))
+    else:
+        actual = coarsened.mean()
+
+    assert "x" not in actual.xindexes
+    assert_identical(actual.coords["x"].variable, custom_index_obj.coords["x"].variable)
+
+
+@pytest.mark.parametrize("operation", ["mean", "construct"])
+def test_coarsen_untouched_multiindex(custom_index_obj, operation):
+    obj = custom_index_obj.stack(z=("x", "y"))
+    coarsened = obj.coarsen(time=2)
+    if operation == "construct":
+        actual = coarsened.construct(time=("time", "window"))
+    else:
+        actual = coarsened.mean()
+
+    for name in ("z", "x", "y"):
+        assert actual.xindexes[name] is obj.xindexes[name]
+        assert_identical(actual.coords[name].variable, obj.coords[name].variable)
+
+
 def test_coarsen_absent_dims_error(ds: Dataset) -> None:
     with pytest.raises(
         ValueError,
