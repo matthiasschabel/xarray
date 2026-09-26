@@ -55,6 +55,8 @@ Deprecations
 Bug Fixes
 ~~~~~~~~~
 
+- Rolling an empty dimension now returns an unchanged empty result, including
+  when rolling coordinates, instead of raising ``ZeroDivisionError``.
 - :py:meth:`Dataset.reduce`, :py:meth:`Dataset.quantile`, and
   :py:meth:`Dataset.integrate` now drop an index from all its coordinates when
   reducing away a dimension used by that index.
