@@ -11,6 +11,8 @@ import numpy as np
 
 from xarray.compat import dask_array_ops
 from xarray.core import dtypes, duck_array_ops, utils
+from xarray.core.coordinates import Coordinates
+from xarray.core.indexes import filter_indexes_from_coords
 from xarray.core.options import OPTIONS, _get_keep_attrs
 from xarray.core.types import CoarsenBoundaryOptions, SideOptions, T_Xarray
 from xarray.core.utils import (
@@ -18,6 +20,7 @@ from xarray.core.utils import (
     is_duck_dask_array,
     module_available,
 )
+from xarray.core.variable import Variable
 from xarray.util.deprecation_helpers import _deprecate_positional_args
 
 try:
@@ -1137,6 +1140,10 @@ class Coarsen(Generic[T_Xarray]):
                 f"dimensions {tuple(self.obj.dims)}"
             )
 
+        for index, index_coords in obj.xindexes.group_by_index():
+            if any(windows.keys() & set(var.dims) for var in index_coords.values()):
+                index.check_coarsen(windows)
+
         if utils.is_dict_like(coord_func):
             coord_func_map = coord_func
         else:
@@ -1145,6 +1152,23 @@ class Coarsen(Generic[T_Xarray]):
             if c not in coord_func_map:
                 coord_func_map[c] = duck_array_ops.mean  # type: ignore[index]
         self.coord_func = coord_func_map
+
+    def _construct_coords(self, coords: Mapping[Hashable, Variable]) -> Coordinates:
+        unchanged = {
+            name
+            for name, var in self.obj.coords.variables.items()
+            if not self.windows.keys() & set(var.dims)
+            and name in coords
+            and coords[name].dims == var.dims
+        }
+        indexes = filter_indexes_from_coords(self.obj.xindexes, unchanged)
+        new_coords = Coordinates(
+            {k: v for k, v in coords.items() if k not in unchanged}
+        )
+        return Coordinates(
+            {**coords, **new_coords.variables},
+            indexes={**new_coords.xindexes, **indexes},
+        )
 
     def _get_keep_attrs(self, keep_attrs):
         if keep_attrs is None:
@@ -1278,13 +1302,11 @@ class Coarsen(Generic[T_Xarray]):
                 f"'window_dim' includes dimensions that will not be coarsened: {extra_windows}"
             )
 
-        reshaped = Dataset()
+        reshaped = {}
         if isinstance(self.obj, DataArray):
             obj = self.obj._to_temp_dataset()
         else:
             obj = self.obj
-
-        reshaped.attrs = obj.attrs if keep_attrs else {}
 
         for key, var in obj.variables.items():
             reshaped_dims = tuple(
@@ -1294,15 +1316,14 @@ class Coarsen(Generic[T_Xarray]):
                 windows = {w: self.windows[w] for w in window_dim if w in var.dims}
                 reshaped_var, _ = var.coarsen_reshape(windows, self.boundary, self.side)
                 attrs = var.attrs if keep_attrs else {}
-                reshaped[key] = (reshaped_dims, reshaped_var, attrs)
+                reshaped[key] = Variable(reshaped_dims, reshaped_var, attrs)
             else:
                 reshaped[key] = var
 
-        # should handle window_dim being unindexed
-        should_be_coords = (set(window_dim) & set(self.obj.coords)) | set(
-            self.obj.coords
+        coords = self._construct_coords(
+            {name: reshaped.pop(name) for name in obj.coords}
         )
-        result = reshaped.set_coords(should_be_coords)
+        result = Dataset(reshaped, coords=coords, attrs=obj.attrs if keep_attrs else {})
         if isinstance(self.obj, DataArray):
             return self.obj._from_temp_dataset(result)
         else:
@@ -1350,9 +1371,12 @@ class DataArrayCoarsen(Coarsen["DataArray"]):
                         **kwargs,
                     )
                 else:
-                    coords[c] = v
+                    coords[c] = v.variable
             return DataArray(
-                reduced, dims=self.obj.dims, coords=coords, name=self.obj.name
+                reduced,
+                dims=self.obj.dims,
+                coords=self._construct_coords(coords),
+                name=self.obj.name,
             )
 
         return wrapped_func
@@ -1449,7 +1473,7 @@ class DatasetCoarsen(Coarsen["Dataset"]):
                     **kwargs,
                 )
 
-            return Dataset(reduced, coords=coords, attrs=attrs)
+            return Dataset(reduced, coords=self._construct_coords(coords), attrs=attrs)
 
         return wrapped_func
 
