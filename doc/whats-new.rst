@@ -13,6 +13,8 @@ v2026.07.1 (unreleased)
 
 New Features
 ~~~~~~~~~~~~
+- Custom indexes can implement :py:meth:`Index.check_coarsen` to reject
+  coarsening before data or coordinates are transformed.
 - Custom indexes can implement :py:meth:`Index.swap_dims` to stay attached to
   all their coordinates when :py:meth:`Dataset.swap_dims` renames a dimension.
 - Added `PyArrowCapsule interface <https://arrow.apache.org/docs/format/CDataInterface/PyCapsuleInterface.html#arrow-pycapsule-interface>`_
@@ -55,6 +57,9 @@ Deprecations
 Bug Fixes
 ~~~~~~~~~
 
+- Coarsen reductions and construction now preserve custom indexes whose
+  coordinates do not depend on any coarsened dimension. Untouched coordinates
+  left over from a dropped index remain unindexed.
 - Rolling an empty dimension now returns an unchanged empty result, including
   when rolling coordinates, instead of raising ``ZeroDivisionError``.
 - :py:meth:`Dataset.reduce`, :py:meth:`Dataset.quantile`, and

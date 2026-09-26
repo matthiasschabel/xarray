@@ -202,6 +202,34 @@ class Index:
         else:
             return {}
 
+    def check_coarsen(self, windows: Mapping[Hashable, int]) -> None:
+        """Validate coarsening before any data or coordinates are transformed.
+
+        Called once per distinct affected index when creating a
+        :py:meth:`Dataset.coarsen` or :py:meth:`DataArray.coarsen` object,
+        before reduction or construction. An index is affected when any of its
+        coordinate dimensions occurs in ``windows``; untouched indexes are not
+        checked. The default implementation does nothing. Subclasses may raise
+        :py:class:`ValueError` to reject the requested coarsening.
+
+        This hook only validates: coarsening an indexed coordinate requires new
+        sample or cell semantics, so no generic transformed index can be
+        produced. Coarsening drops affected indexes and retains untouched
+        indexes. Untouched coordinates of a dropped index remain unindexed.
+
+        Parameters
+        ----------
+        windows : mapping of hashable to int
+            Mapping from dimension names to coarsening window sizes, including
+            dimensions not associated with this index.
+
+        Raises
+        ------
+        ValueError
+            If the index subclass does not allow the requested coarsening.
+        """
+        pass
+
     def should_add_coord_to_array(
         self,
         name: Hashable,

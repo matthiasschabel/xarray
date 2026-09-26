@@ -67,6 +67,7 @@ The Index base class for building custom indexes:
    Index.stack
    Index.unstack
    Index.create_variables
+   Index.check_coarsen
    Index.should_add_coord_to_array
    Index.to_pandas_index
    Index.isel
