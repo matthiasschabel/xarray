@@ -5326,6 +5326,10 @@ class Dataset(
         if ... in dims:
             dims = list(infix_dims(dims, self.dims))
 
+        for index, index_vars in self.xindexes.group_by_index():
+            if any(d in var.dims for var in index_vars.values() for d in dims):
+                index.check_stack(dims)
+
         new_variables: dict[Hashable, Variable] = {}
         stacked_var_names: list[Hashable] = []
         drop_indexes: list[Hashable] = []
@@ -9330,6 +9334,11 @@ class Dataset(
         # keep indexes that won't be affected by pad and drop all other indexes
         xindexes = self.xindexes
         pad_dims = set(pad_width)
+        for index, index_vars in xindexes.group_by_index():
+            index_dims = {d for var in index_vars.values() for d in var.dims}
+            index_pad_width = {d: w for d, w in pad_width.items() if d in index_dims}
+            if index_pad_width:
+                index.check_pad(index_pad_width)
         indexes = {
             k: idx
             for k, idx in xindexes.items()
