@@ -169,6 +169,47 @@ class Index:
         """
         raise NotImplementedError()
 
+    def check_stack(self, dims: Sequence[Hashable]) -> None:
+        """Check whether dimensions of this index may be stacked.
+
+        Implementation is optional. The default allows stacking, which may
+        drop or replace this index. Subclasses may raise ``ValueError`` to
+        reject the operation. This method should not modify the index.
+
+        Called once per affected index still present before each stacking step in
+        :py:meth:`Dataset.stack` or :py:meth:`DataArray.stack`, including when
+        ``create_index=False``. Only indexes with coordinate dimensions that
+        intersect ``dims`` are consulted. Unlike :py:meth:`Index.stack`, this
+        method checks an existing index rather than creating a new one.
+        Operations that stack internally, such as multidimensional groupby,
+        also trigger this check because their results would otherwise lose
+        the index.
+
+        Parameters
+        ----------
+        dims : sequence of hashable
+            All dimensions to stack in this step, with any ellipsis expanded.
+        """
+
+    def check_pad(self, pad_width: Mapping[Hashable, int | tuple[int, int]]) -> None:
+        """Check whether dimensions of this index may be padded.
+
+        Implementation is optional. The default allows padding, which drops
+        or replaces this index. Subclasses may raise ``ValueError`` to reject
+        the operation. This method should not modify the index.
+
+        Called once per affected index by :py:meth:`Dataset.pad` or
+        :py:meth:`DataArray.pad`, before padding any variables. Indexes whose
+        coordinate dimensions do not intersect ``pad_width`` are not consulted.
+
+        Parameters
+        ----------
+        pad_width : mapping of hashable to int or tuple of int
+            Requested padding widths for this index's coordinate dimensions
+            only. Includes explicitly supplied zero widths, which also cause
+            the index to be dropped or replaced.
+        """
+
     def create_variables(
         self, variables: Mapping[Any, Variable] | None = None
     ) -> IndexVars:
