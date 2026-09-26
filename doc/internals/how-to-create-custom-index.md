@@ -81,6 +81,27 @@ coordinate or dimension names. In the case of `PandasIndex`, we rename the
 underlying `pandas.Index` object and/or update the `PandasIndex.dim`
 attribute since the associated dimension name has been changed.
 
+An existing index can optionally implement {py:meth}`Index.check_stack` to
+raise `ValueError` before its dimensions are stacked. This preflight receives
+all dimensions requested for the stacking step, after expanding ellipses, even
+when `create_index=False`. It runs once per affected index still present at each
+step, even when the index owns multiple coordinates. Indexes whose coordinate
+dimensions do not intersect the requested dimensions are not consulted.
+Operations that stack internally, such as multidimensional groupby, also trigger
+the check because their results would otherwise lose the index. The default
+does nothing, allowing the index to be dropped or replaced as usual.
+Implementations should validate without modifying the index. This is separate
+from {py:meth}`Index.stack`, which creates a new index for stacked coordinates.
+
+An existing index can optionally implement {py:meth}`Index.check_pad` to raise
+`ValueError` before padding dimensions owned by the index. It receives only the
+requested padding widths for the index's coordinate dimensions, including
+explicit zero widths, and runs before any variables are padded. It runs once
+per affected index, even when the index owns multiple coordinates. Indexes whose
+coordinate dimensions do not intersect the requested dimensions are not
+consulted. The default allows the index to be dropped or replaced as usual.
+Implementations should validate without modifying the index.
+
 ## Inline representations
 
 Xarray uses the optional `_repr_inline_(max_width)` method when it needs a compact,

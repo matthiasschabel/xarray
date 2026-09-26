@@ -289,6 +289,40 @@ class SwappableDimsIndex(SwapDimsIndex):
         return type(self)(tuple(dims_dict.get(dim, dim) for dim in self.dims))
 
 
+class StackCheckingIndex(Index):
+    calls: list[tuple[Hashable, ...]]
+    refuse: bool
+
+    @classmethod
+    def from_variables(cls, variables, *, options):
+        index = cls()
+        index.calls = options["calls"]
+        index.refuse = options.get("refuse", True)
+        return index
+
+    def check_stack(self, dims):
+        self.calls.append(tuple(dims))
+        if self.refuse:
+            raise ValueError("index does not allow stacking")
+
+
+class PadCheckingIndex(Index):
+    calls: list[dict[Hashable, int | tuple[int, int]]]
+    refuse: bool
+
+    @classmethod
+    def from_variables(cls, variables, *, options):
+        index = cls()
+        index.calls = options["calls"]
+        index.refuse = options.get("refuse", True)
+        return index
+
+    def check_pad(self, pad_width):
+        self.calls.append(dict(pad_width))
+        if self.refuse:
+            raise ValueError("index does not allow padding")
+
+
 class TestDataset:
     def test_repr(self) -> None:
         data = create_test_data(seed=123, use_extension_array=True)
@@ -4319,6 +4353,73 @@ class TestDataset:
         assert_identical(expected, actual)
         assert list(actual.xindexes) == ["z", "xx", "y"]
 
+    @pytest.mark.parametrize("create_index", [True, False, None])
+    @pytest.mark.parametrize("dims", [("x",), ("y",), ("x", "y"), ("x", "t"), (...,)])
+    @pytest.mark.parametrize("as_dataset", [False, True])
+    def test_stack_index_preflight_refusal(
+        self, create_index, dims, as_dataset
+    ) -> None:
+        array = DataArray(
+            np.arange(12).reshape(2, 3, 2),
+            dims=("y", "x", "t"),
+            coords={"x": [10, 20, 30], "y": [40, 50]},
+        ).drop_indexes(["x", "y"])
+        calls: list[tuple[Hashable, ...]] = []
+        array = array.set_xindex(["x", "y"], StackCheckingIndex, calls=calls)
+        obj = array.to_dataset(name="data") if as_dataset else array
+        with pytest.raises(ValueError, match="index does not allow stacking"):
+            obj.stack(z=dims, create_index=create_index)
+        if dims == (...,):
+            assert len(calls) == 1
+            assert set(calls[0]) == set(array.dims)
+        else:
+            assert calls == [dims]
+
+    def test_stack_index_preflight_once_and_skips_unrelated_indexes(self) -> None:
+        ds = Dataset(
+            {"data": (("x", "t"), np.arange(4).reshape(2, 2))},
+            coords={"a": ("x", [1, 2]), "b": ("x", [3, 4]), "y": [5, 6]},
+        )
+        calls: list[tuple[Hashable, ...]] = []
+        ds = ds.set_xindex(["a", "b"], StackCheckingIndex, calls=calls, refuse=False)
+        unrelated_calls: list[tuple[Hashable, ...]] = []
+        ds = ds.drop_indexes("y").set_xindex(
+            "y", StackCheckingIndex, calls=unrelated_calls
+        )
+
+        result = ds.stack(z=("t",), create_index=False)
+        assert calls == []
+        assert unrelated_calls == []
+        assert result.xindexes["a"] is ds.xindexes["a"]
+        assert result.xindexes["b"] is ds.xindexes["b"]
+        assert result.xindexes["y"] is ds.xindexes["y"]
+
+        result = ds.stack(z=("x", "t"), create_index=False)
+        assert calls == [("x", "t")]
+        assert unrelated_calls == []
+        assert result.xindexes["y"] is ds.xindexes["y"]
+        assert "a" not in result.xindexes
+        assert "b" not in result.xindexes
+        assert_array_equal(result.data, np.arange(4))
+
+    @pytest.mark.parametrize("custom", [False, True])
+    def test_stack_without_index_preflight_override(self, custom) -> None:
+        class CustomIndex(Index):
+            @classmethod
+            def from_variables(cls, variables, *, options):
+                return cls()
+
+        array = DataArray(
+            np.arange(6).reshape(2, 3),
+            dims=("y", "x"),
+            coords={"x": [10, 20, 30], "y": [40, 50]},
+        )
+        if custom:
+            array = array.drop_indexes(["x", "y"]).set_xindex(["x", "y"], CustomIndex)
+        result = array.stack(z=("y", "x"))
+        assert_array_equal(result, np.arange(6))
+        assert result.dims == ("z",)
+
     def test_unstack(self) -> None:
         index = pd.MultiIndex.from_product([[0, 1], ["a", "b"]], names=["x", "y"])
         coords = Coordinates.from_pandas_multiindex(index, "z")
@@ -7993,6 +8094,74 @@ class TestDataset:
             {"x": (1, 1)}, mode="constant", constant_values=0, keep_attrs=keep_attrs
         )
         xr.testing.assert_identical(actual, expected)
+
+    @pytest.mark.parametrize("dim", ["x", "y"])
+    @pytest.mark.parametrize("as_dataset", [False, True])
+    def test_pad_index_preflight_refusal(self, dim, as_dataset, monkeypatch) -> None:
+        array = DataArray(
+            np.arange(12).reshape(2, 3, 2),
+            dims=("y", "x", "t"),
+            coords={"x": [10, 20, 30], "y": [40, 50]},
+        ).drop_indexes(["x", "y"])
+        calls: list[dict[Hashable, int | tuple[int, int]]] = []
+        array = array.set_xindex(["x", "y"], PadCheckingIndex, calls=calls)
+        obj = array.to_dataset(name="data") if as_dataset else array
+
+        def unexpected_pad(*args, **kwargs):
+            pytest.fail("data padded before index preflight")
+
+        monkeypatch.setattr(Variable, "pad", unexpected_pad)
+        with pytest.raises(ValueError, match="index does not allow padding"):
+            obj.pad({dim: (1, 2), "t": 1})
+        assert calls == [{dim: (1, 2)}]
+
+    def test_pad_index_preflight_once_and_skips_unrelated_indexes(self) -> None:
+        ds = Dataset(
+            {"data": (("x", "t"), np.arange(4).reshape(2, 2))},
+            coords={"a": ("x", [1, 2]), "b": ("x", [3, 4]), "y": [5, 6]},
+        )
+        calls: list[dict[Hashable, int | tuple[int, int]]] = []
+        ds = ds.set_xindex(["a", "b"], PadCheckingIndex, calls=calls, refuse=False)
+        unrelated_calls: list[dict[Hashable, int | tuple[int, int]]] = []
+        ds = ds.drop_indexes("y").set_xindex(
+            "y", PadCheckingIndex, calls=unrelated_calls
+        )
+
+        result = ds.pad(t=1, mode="edge")
+        assert calls == []
+        assert unrelated_calls == []
+        assert result.xindexes["a"] is ds.xindexes["a"]
+        assert result.xindexes["b"] is ds.xindexes["b"]
+        assert result.xindexes["y"] is ds.xindexes["y"]
+
+        result = ds.pad(x=1, t=1, mode="edge")
+        assert calls == [{"x": 1}]
+        assert unrelated_calls == []
+        assert result.xindexes["y"] is ds.xindexes["y"]
+        assert "a" not in result.xindexes
+        assert "b" not in result.xindexes
+        assert_array_equal(result.a, [1, 1, 2, 2])
+        assert_array_equal(
+            result.data, [[0, 0, 1, 1], [0, 0, 1, 1], [2, 2, 3, 3], [2, 2, 3, 3]]
+        )
+
+    @pytest.mark.parametrize("custom", [False, True])
+    def test_pad_without_index_preflight_override(self, custom) -> None:
+        class CustomIndex(Index):
+            @classmethod
+            def from_variables(cls, variables, *, options):
+                return cls()
+
+        array = DataArray(
+            np.arange(6).reshape(2, 3),
+            dims=("y", "x"),
+            coords={"x": [10, 20, 30], "y": [40, 50]},
+        )
+        if custom:
+            array = array.drop_indexes(["x", "y"]).set_xindex(["x", "y"], CustomIndex)
+        result = array.pad(x=(1, 2), mode="edge")
+        assert_array_equal(result, [[0, 0, 1, 2, 2, 2], [3, 3, 4, 5, 5, 5]])
+        assert_array_equal(result.x, [10, 10, 20, 30, 30, 30])
 
     def test_astype_attrs(self) -> None:
         data = create_test_data(seed=123)

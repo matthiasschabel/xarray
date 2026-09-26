@@ -65,7 +65,9 @@ The Index base class for building custom indexes:
    Index.from_variables
    Index.concat
    Index.stack
+   Index.check_stack
    Index.unstack
+   Index.check_pad
    Index.create_variables
    Index.check_coarsen
    Index.should_add_coord_to_array
