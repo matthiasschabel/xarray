@@ -472,3 +472,45 @@ def test_drop_all_scalar_index_coordinates() -> None:
     result = make_array().isel(x=0, y=0, drop=True)
     assert not result.coords
     assert not result.xindexes
+
+
+def make_labelled(x_values: list[int]) -> xr.DataArray:
+    return xr.DataArray(
+        np.ones((2, 3)), dims=("y", "x"), coords={"y": [0, 1], "x": x_values}
+    )
+
+
+@pytest.mark.parametrize("method", ["setitem", "update_dataset"])
+def test_update_keeps_index_accepting_equal_labels(method: str) -> None:
+    ds = make_array().to_dataset(name="a")
+    labelled = make_labelled([10, 20, 30])
+
+    if method == "setitem":
+        ds["v"] = labelled
+    else:
+        ds.update(labelled.to_dataset(name="v"))
+
+    assert isinstance(ds.xindexes["x"], TwoCoordinateIndex)
+    assert ds.xindexes["x"] is ds.xindexes["y"]
+    np.testing.assert_array_equal(ds["v"], labelled)
+
+
+def test_update_with_shifted_labels_raises() -> None:
+    ds = make_array().to_dataset(name="a")
+
+    with pytest.raises(xr.AlignmentError, match="drop_indexes"):
+        ds["v"] = make_labelled([11, 21, 31])
+
+
+def test_update_without_overlap_hook_raises() -> None:
+    ds = make_array(NoOverlapHookIndex).to_dataset(name="a")
+
+    with pytest.raises(xr.AlignmentError, match="drop_indexes"):
+        ds["v"] = make_labelled([10, 20, 30])
+
+
+def test_update_overlap_refusal_propagates() -> None:
+    ds = make_array(RefusingIndex).to_dataset(name="a")
+
+    with pytest.raises(ValueError, match="overlapping labels are unsupported"):
+        ds["v"] = make_labelled([10, 20, 30])
