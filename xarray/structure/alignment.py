@@ -1134,8 +1134,11 @@ def reindex_like(
     )
 
 
-def _get_broadcast_dims_map_common_coords(args, exclude):
+def _get_broadcast_dims_map_common_coords(
+    args: Iterable[Alignable], exclude: Iterable[Hashable]
+) -> tuple[dict[Hashable, int], dict[Hashable, Variable], dict[Hashable, Index]]:
     common_coords = {}
+    common_indexes = {}
     dims_map = {}
     for arg in args:
         for dim in arg.dims:
@@ -1144,18 +1147,26 @@ def _get_broadcast_dims_map_common_coords(args, exclude):
             if dim not in dims_map:
                 dims_map[dim] = arg.sizes[dim]
             if dim in arg._indexes and dim not in common_coords:
-                common_coords.update(arg.xindexes.get_all_coords(dim))
+                coords = arg.xindexes.get_all_coords(dim)
+                if any(d in exclude for var in coords.values() for d in var.dims):
+                    continue
+                common_coords.update(coords)
+                common_indexes.update({name: arg._indexes[name] for name in coords})
 
-    return dims_map, common_coords
+    return dims_map, common_coords, common_indexes
 
 
 def _broadcast_helper(
-    arg: T_Alignable, exclude, dims_map, common_coords
+    arg: T_Alignable,
+    exclude: Iterable[Hashable],
+    dims_map: dict[Hashable, int],
+    common_coords: dict[Hashable, Variable],
+    common_indexes: dict[Hashable, Index],
 ) -> T_Alignable:
     from xarray.core.dataarray import DataArray
     from xarray.core.dataset import Dataset
 
-    def _set_dims(var):
+    def _set_dims(var: Variable) -> Variable:
         # Add excluded dims to a copy of dims_map
         var_dims_map = dims_map.copy()
         for dim in exclude:
@@ -1167,17 +1178,20 @@ def _broadcast_helper(
 
     def _broadcast_array(array: T_DataArray) -> T_DataArray:
         data = _set_dims(array.variable)
-        coords = dict(array.coords)
+        coords = dict(array._coords)
         coords.update(common_coords)
-        return array.__class__(
-            data, coords, data.dims, name=array.name, attrs=array.attrs
-        )
+        indexes = dict(array._indexes)
+        indexes.update(common_indexes)
+        return array._replace(data, coords, indexes=indexes)
 
     def _broadcast_dataset(ds: T_Dataset) -> T_Dataset:
         data_vars = {k: _set_dims(ds.variables[k]) for k in ds.data_vars}
-        coords = dict(ds.coords)
+        coords = {name: ds._variables[name] for name in ds._coord_names}
         coords.update(common_coords)
-        return ds.__class__(data_vars, coords, ds.attrs)
+        indexes = dict(ds._indexes)
+        indexes.update(common_indexes)
+        variables = {**data_vars, **coords}
+        return ds._replace_with_new_dims(variables, set(coords), indexes=indexes)
 
     # remove casts once https://github.com/python/mypy/issues/12800 is resolved
     if isinstance(arg, DataArray):
@@ -1321,7 +1335,12 @@ def broadcast(
         exclude = set()
     args = align(*args, join="outer", copy=False, exclude=exclude)
 
-    dims_map, common_coords = _get_broadcast_dims_map_common_coords(args, exclude)
-    result = [_broadcast_helper(arg, exclude, dims_map, common_coords) for arg in args]
+    dims_map, common_coords, common_indexes = _get_broadcast_dims_map_common_coords(
+        args, exclude
+    )
+    result = [
+        _broadcast_helper(arg, exclude, dims_map, common_coords, common_indexes)
+        for arg in args
+    ]
 
     return tuple(result)
