@@ -18,6 +18,9 @@ New Features
   all other broadcast dimensions to ``func`` in bulk. This is much faster than
   ``vectorize=True`` if ``func`` can broadcast its inputs, for numpy and dask
   arrays alike (:pull:`11681`).
+- Add the optional :py:meth:`Index.check_drop` hook so custom indexes can refuse
+  stacking, padding, or coarsening before being dropped or replaced. The default
+  implementation allows these operations.
 - :py:class:`~xarray.Variable` is now generic in the types of its shape, dtype
   and dimension names, like :py:class:`~xarray.NamedArray`: it is defined as
   ``class Variable(NamedArray[ShapeType_co, DType_co, DimType_co])``, so static
