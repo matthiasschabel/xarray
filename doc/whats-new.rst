@@ -238,6 +238,9 @@ Bug Fixes
 - :py:meth:`DataArray.str.extract` with ``dim`` now supports NumPy ``StringDType`` arrays,
   and no longer fails if the first value does not match (:pull:`11793`).
   By `jdotc1 <https://github.com/jdotc1>`_.
+- Coarsen reductions and construction now preserve custom indexes whose
+  coordinates do not depend on any coarsened dimension. Untouched coordinates
+  left over from a dropped index remain unindexed.
 - :py:meth:`Dataset.query` now resolves coordinates in datasets with no data
   variables (:issue:`6449`).
   By `Liang, Jingyi <https://github.com/LJimmy007>`_.
