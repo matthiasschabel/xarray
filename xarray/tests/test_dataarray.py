@@ -3695,6 +3695,15 @@ class TestDataArray:
             assert_array_equal(broadcast_result.x, [10, 20, 30])
             assert_array_equal(broadcast_result.y, [0, 1])
 
+    def test_broadcast_dataset_data_var_coordinate_conflict(self) -> None:
+        array = DataArray([1, 2], dims="x", coords={"x": [10, 20]})
+        ds = Dataset({"x": ("y", [100, 200])})
+
+        with pytest.raises(
+            ValueError, match=r"variables \{'x'\} are found in both data_vars and coords"
+        ):
+            broadcast(array, ds)
+
     def test_broadcast_arrays_misaligned(self) -> None:
         # broadcast on misaligned coords must auto-align
         x = DataArray([[1, 2], [3, 4]], coords=[("a", [-1, -2]), ("b", [3, 4])])
