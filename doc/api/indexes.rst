@@ -67,6 +67,7 @@ The Index base class for building custom indexes:
    Index.stack
    Index.unstack
    Index.check_drop
+   Index.join_overlapping
    Index.create_variables
    Index.should_add_coord_to_array
    Index.to_pandas_index
@@ -82,6 +83,12 @@ The Index base class for building custom indexes:
 ``Index.check_drop`` is optional and allows the operation by default. Override
 it to refuse stacking, padding, interpolation (including ``interp_like``), or
 coarsening before an index is dropped or replaced.
+
+``Index.join_overlapping`` optionally joins indexed subsets and validates overlapping
+coordinates. Its default returns ``None``, declining joins while allowing validation.
+With ``how="override"`` it may veto overlapping indexes; with ``how=None`` it may veto
+replacement of same-name unindexed coordinates. Both validation modes ignore the return
+value. Raising refuses the operation in every mode.
 
 
 The following are useful when building custom Indexes

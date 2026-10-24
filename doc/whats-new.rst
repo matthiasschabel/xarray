@@ -18,6 +18,9 @@ New Features
   all other broadcast dimensions to ``func`` in bulk. This is much faster than
   ``vectorize=True`` if ``func`` can broadcast its inputs, for numpy and dask
   arrays alike (:pull:`11681`).
+- Add the optional :py:meth:`Index.join_overlapping` hook for joining indexed
+  subsets, validating overlapping coordinates, and accepting equal-label incoming
+  indexes in Dataset assignment and update. The default preserves existing behavior.
 - Add the optional :py:meth:`Index.check_drop` hook so custom indexes can refuse
   stacking, padding, or coarsening before being dropped or replaced. The default
   implementation allows these operations.
