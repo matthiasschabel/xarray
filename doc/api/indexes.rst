@@ -66,6 +66,7 @@ The Index base class for building custom indexes:
    Index.concat
    Index.stack
    Index.unstack
+   Index.check_drop
    Index.create_variables
    Index.should_add_coord_to_array
    Index.to_pandas_index
@@ -77,6 +78,10 @@ The Index base class for building custom indexes:
    Index.roll
    Index.rename
    Index.copy
+
+``Index.check_drop`` is optional and allows the operation by default. Override
+it to refuse stacking, padding, interpolation (including ``interp_like``), or
+coarsening before an index is dropped or replaced.
 
 
 The following are useful when building custom Indexes

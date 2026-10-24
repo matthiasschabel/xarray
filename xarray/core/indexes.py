@@ -167,6 +167,34 @@ class Index:
         """
         raise NotImplementedError()
 
+    def check_drop(self, operation: str, dims: Sequence[Hashable]) -> None:
+        """Check whether an operation may drop or replace this index.
+
+        Implementation is optional. The default does nothing, allowing the
+        operation. Subclasses may raise an exception to refuse the operation.
+        This method should not modify the index.
+
+        Called once per affected index before each stacking step, before
+        padding or interpolating variables, or when constructing a coarsen
+        object (not again during reduction or construction of window dimensions).
+        Indexes whose coordinate dimensions do not intersect the operation
+        dimensions are not consulted. Dataset and DataArray operations both
+        call this method, including operations that stack internally and
+        ``create_index=False``.
+
+        Parameters
+        ----------
+        operation : str
+            Operation that will drop or replace this index: ``"stack"``,
+            ``"pad"``, ``"interp"`` (including ``interp_like``), or ``"coarsen"``.
+        dims : sequence of hashable
+            For stacking, all dimensions in this step, with ellipsis expanded.
+            For coarsening, all requested window dimensions. For padding, only
+            the requested dimensions of this index's coordinates, including
+            dimensions with explicitly supplied zero widths. For interpolation,
+            only the interpolated dimensions of this index's coordinates.
+        """
+
     def create_variables(
         self, variables: Mapping[Any, Variable] | None = None
     ) -> IndexVars:

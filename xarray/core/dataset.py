@@ -4023,6 +4023,11 @@ class Dataset(
 
         coords = either_dict_or_kwargs(coords, coords_kwargs, "interp")
         indexers = dict(self._validate_interp_indexers(coords))
+        for index, index_vars in self.xindexes.group_by_index():
+            index_dims = {d for var in index_vars.values() for d in var.dims}
+            index_interp_dims = tuple(d for d in indexers if d in index_dims)
+            if index_interp_dims:
+                index.check_drop("interp", index_interp_dims)
         obj = self if assume_sorted else self._sort_for_interp(list(coords))
 
         def maybe_variable(obj, k):
@@ -5359,6 +5364,10 @@ class Dataset(
             raise ValueError("Please use [...] for dims, rather than just ...")
         if ... in dims:
             dims = list(infix_dims(dims, self.dims))
+
+        for index, index_vars in self.xindexes.group_by_index():
+            if any(d in var.dims for var in index_vars.values() for d in dims):
+                index.check_drop("stack", dims)
 
         new_variables: dict[Hashable, Variable] = {}
         stacked_var_names: list[Hashable] = []
@@ -9359,6 +9368,11 @@ class Dataset(
         # keep indexes that won't be affected by pad and drop all other indexes
         xindexes = self.xindexes
         pad_dims = set(pad_width)
+        for index, index_vars in xindexes.group_by_index():
+            index_dims = {d for var in index_vars.values() for d in var.dims}
+            index_pad_dims = tuple(d for d in pad_width if d in index_dims)
+            if index_pad_dims:
+                index.check_drop("pad", index_pad_dims)
         indexes = {
             k: idx
             for k, idx in xindexes.items()

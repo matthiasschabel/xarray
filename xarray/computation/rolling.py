@@ -1172,6 +1172,10 @@ class Coarsen[T_Xarray: (DataArray, Dataset)]:
                 f"dimensions {tuple(self.obj.dims)}"
             )
 
+        for index, index_coords in obj.xindexes.group_by_index():
+            if any(windows.keys() & set(var.dims) for var in index_coords.values()):
+                index.check_drop("coarsen", tuple(windows))
+
         if utils.is_dict_like(coord_func):
             coord_func_map = coord_func
         else:
