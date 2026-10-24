@@ -294,6 +294,13 @@ def merge_collected(
                 # OK throwing away variable without an index in favor of
                 # indexed variables, without even checking if values match?
                 variable, index = indexed_elements[0]
+                unindexed_vars = {
+                    name: other_var  # noqa: B035 - The maintainer decides last-candidate behavior.
+                    for other_var, other_index in elements_list
+                    if other_index is None and other_var.dims == variable.dims
+                }
+                if unindexed_vars:
+                    index.join_overlapping({}, other_variables=unindexed_vars, how=None)
                 for other_var, other_index in indexed_elements[1:]:
                     if not indexes_equal(
                         index, other_index, variable, other_var, index_cmp_cache
@@ -1195,12 +1202,18 @@ def _check_update_index_types(
     dataset: Dataset,
     objects: Mapping[Hashable | None, DataArray | Dataset],
     replaced: AbstractSet[Hashable],
-) -> None:
-    """Raise if an index in ``objects`` would replace one of ``dataset``'s
-    indexes with an index of another type or coordinate set.
-    Coordinates in ``replaced`` are skipped.
+) -> dict[Hashable | None, set[Hashable]]:
+    """Check incoming index replacements and return accepted coordinates to drop.
+
+    Raise for a different index type or coordinate set unless the Dataset's
+    index accepts it. Coordinates in ``replaced`` are skipped.
+
+    A Dataset index may accept equal-labelled incoming indexes through
+    :py:meth:`Index.join_overlapping`. Returns the incoming index coordinates
+    to drop, per key of ``objects``, for the accepted ones.
     """
     dataset_indexes = dataset.xindexes
+    accepted: dict[Hashable | None, set[Hashable]] = {}
     for key, obj in objects.items():
         object_indexes = obj.xindexes
         for name, index in object_indexes.items():
@@ -1213,6 +1226,23 @@ def _check_update_index_types(
             coords = set(object_indexes.get_all_coords(name))
             if type(index) is type(own) and coords == own_coords:
                 continue
+            if name in accepted.get(key, ()):
+                continue
+            overlap = {c: object_indexes[c] for c in own_coords if c in object_indexes}
+            if all(
+                set(object_indexes.get_all_coords(c)) <= own_coords for c in overlap
+            ) and all(
+                obj.coords[c].variable.equals(dataset.coords[c].variable)
+                for c in overlap
+            ):
+                result = own.join_overlapping(
+                    overlap,
+                    other_variables={c: obj.coords[c].variable for c in overlap},
+                    how="left",
+                )
+                if result is not None:
+                    accepted.setdefault(key, set()).update(overlap)
+                    continue
             source = "the other Dataset" if key is None else f"the value for {key!r}"
             to_drop = sorted(
                 {
@@ -1229,6 +1259,7 @@ def _check_update_index_types(
                 f"{sorted(coords, key=str)!r} in {source}. "
                 f"Drop the incoming index first, e.g. with .drop_indexes({to_drop!r})."
             )
+    return accepted
 
 
 def dataset_update_method(dataset: Dataset, other: CoercibleMapping) -> _MergeResult:
@@ -1258,13 +1289,16 @@ def dataset_update_method(dataset: Dataset, other: CoercibleMapping) -> _MergeRe
                     value = value._replace(variable=variable)
                 other[key] = value
         (other,) = coerce_pandas_values([other])
-        _check_update_index_types(
-            dataset,
-            {k: v for k, v in other.items() if isinstance(v, DataArray)},
-            replaced=set(other),
-        )
+        arrays = {k: v for k, v in other.items() if isinstance(v, DataArray)}
+        accepted = _check_update_index_types(dataset, arrays, replaced=set(other))
+        if accepted:
+            other = dict(other)
+            for key, names in accepted.items():
+                other[key] = arrays[key].drop_indexes(names)
     else:
-        _check_update_index_types(dataset, {None: other}, replaced=set())
+        accepted = _check_update_index_types(dataset, {None: other}, replaced=set())
+        if None in accepted:
+            other = other.drop_indexes(accepted[None])
 
     return merge_core(
         [dataset, other],

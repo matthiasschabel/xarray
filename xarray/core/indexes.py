@@ -378,6 +378,58 @@ class Index:
         """
         raise NotImplementedError(f"{self!r} doesn't support re-indexing labels")
 
+    def join_overlapping(
+        self,
+        other_indexes: Mapping[Hashable, Index],
+        *,
+        other_variables: Mapping[Hashable, Variable],
+        how: JoinOptions | None,
+    ) -> tuple[Index, Mapping[Hashable, Index]] | None:
+        """Join or validate overlapping coordinates from another object.
+
+        Implementation is optional. The default returns ``None``, declining
+        overlapping joins and allowing validation-only operations. Subclasses
+        may raise to refuse an operation in any mode.
+
+        Parameters
+        ----------
+        other_indexes : mapping of hashable to Index
+            Indexes keyed by shared coordinate names. For joins, these cover a
+            strict subset of this index's coordinates. For ``how='override'``,
+            any overlap is allowed; for ``how=None``, this mapping is empty.
+        other_variables : mapping of hashable to Variable
+            The other object's shared coordinate variables, including attributes.
+            For ``how=None``, these are same-name, same-dimension unindexed
+            coordinates that would be replaced by this index's coordinates.
+        how : {"inner", "outer", "left", "right", "exact", "override"} or None
+            Join method, with this index as the left operand. ``'override'``
+            only checks whether overlapping indexes on different objects may
+            coexist or replace one another. ``None`` only validates unindexed
+            coordinates, independently of alignment join or merge compatibility.
+            Return values are ignored in both validation modes.
+
+        Returns
+        -------
+        result : tuple of Index and mapping of hashable to Index, or None
+            The joined index and targets for reindexing the subset operand, or
+            ``None`` to decline the join. Targets must cover every name in
+            ``other_indexes`` and share one index per incoming index group.
+            The joined index owns the result coordinates. An exact join must
+            not require reindexing.
+
+        Notes
+        -----
+        With multiple operands, the final joined index may be called again with
+        ``how='left'`` to refresh targets for the final labels. Overlapping joins
+        are disabled when explicit ``indexes=`` are supplied to :py:func:`align`.
+
+        Dataset assignment and update also call this method with ``how='left'``
+        when incoming index groups fit within this index's coordinates and their
+        labels are equal. A non-``None`` result accepts dropping the incoming
+        indexes; the Dataset's index is retained and returned targets are ignored.
+        """
+        return None
+
     @overload
     def equals(self, other: Index) -> bool: ...
 

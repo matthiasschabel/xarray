@@ -3491,8 +3491,14 @@ class Dataset(
 
         if not dim_pos_indexers:
             # fast path for no reindexing necessary
-            if set(new_indexes) - set(self._indexes):
-                # this only adds new indexes and their coordinate variables
+            if set(new_indexes) - set(self._indexes) or (
+                aligner.shadowed_keys
+                and any(
+                    self._indexes.get(name) is not idx
+                    for name, idx in new_indexes.items()
+                )
+            ):
+                # Overlapping joins can also replace an existing subset index.
                 reindexed = self._overwrite_indexes(new_indexes, new_variables)
             else:
                 reindexed = self.copy(deep=aligner.copy)
