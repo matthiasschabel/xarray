@@ -17,6 +17,7 @@ from xarray.core.indexes import (
     Indexes,
     PandasIndex,
     PandasMultiIndex,
+    default_indexes,
     indexes_all_equal,
     safe_cast_to_index,
 )
@@ -1305,6 +1306,13 @@ def _get_broadcast_dims_map_common_coords(
             if dim in arg._indexes and dim not in common_coords:
                 coords = arg.xindexes.get_all_coords(dim)
                 if any(d in exclude for var in coords.values() for d in var.dims):
+                    common_coords.update(
+                        {
+                            name: var
+                            for name, var in coords.items()
+                            if not any(d in exclude for d in var.dims)
+                        }
+                    )
                     continue
                 common_coords.update(coords)
                 common_indexes.update({name: arg._indexes[name] for name in coords})
@@ -1322,6 +1330,17 @@ def _broadcast_helper(
     from xarray.core.dataarray import DataArray
     from xarray.core.dataset import Dataset
 
+    indexes = default_indexes(
+        {
+            name: var
+            for name, var in common_coords.items()
+            if name not in arg._indexes and name not in common_indexes
+        },
+        dims_map,
+    )
+    indexes.update(arg._indexes)
+    indexes.update(common_indexes)
+
     def _set_dims(var: Variable) -> Variable:
         # Add excluded dims to a copy of dims_map
         var_dims_map = dims_map.copy()
@@ -1336,16 +1355,12 @@ def _broadcast_helper(
         data = _set_dims(array.variable)
         coords = dict(array._coords)
         coords.update(common_coords)
-        indexes = dict(array._indexes)
-        indexes.update(common_indexes)
         return array._replace(data, coords, indexes=indexes)
 
     def _broadcast_dataset(ds: T_Dataset) -> T_Dataset:
         data_vars = {k: _set_dims(ds.variables[k]) for k in ds.data_vars}
         coords = {name: ds._variables[name] for name in ds._coord_names}
         coords.update(common_coords)
-        indexes = dict(ds._indexes)
-        indexes.update(common_indexes)
         variables = {**data_vars, **coords}
         return ds._replace_with_new_dims(variables, set(coords), indexes=indexes)
 
