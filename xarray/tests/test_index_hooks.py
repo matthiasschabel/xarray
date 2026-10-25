@@ -116,8 +116,12 @@ def test_broadcast_excludes_joint_index(as_dataset: bool, operation: str) -> Non
     for name in ("x", "y"):
         assert_identical(first.coords[name].variable, joint.coords[name].variable)
     assert set(second.dims) == {"channel", "y"}
-    assert not second.coords
-    assert not second.xindexes
+    assert set(second.coords) == {"y"}
+    assert_identical(second.coords["y"].variable, joint.coords["y"].variable)
+    assert isinstance(second.xindexes["y"], PandasIndex)
+    assert not any(
+        isinstance(index, TwoCoordinateIndex) for index in second.xindexes.values()
+    )
     first_data = first["data"] if as_dataset else first
     second_data = second["other"] if as_dataset else second
     np.testing.assert_array_equal(
