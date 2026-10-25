@@ -3491,7 +3491,28 @@ class Dataset(
 
         if not dim_pos_indexers:
             # fast path for no reindexing necessary
-            if set(new_indexes) - set(self._indexes) or (
+            # A subset index shadowed by an overlapping join is dropped here, as the
+            # reindexing path below does, so the joined index owns its coordinates.
+            # An index is dropped only as a whole group, and kept whole when part of it
+            # passes through from an excluded dimension.
+            shadowed = {name for key in aligner.shadowed_keys for name, _ in key[0]}
+            groups: dict[int, list[Hashable]] = {}
+            for name, idx in self._indexes.items():
+                groups.setdefault(id(idx), []).append(name)
+            dropped = [
+                name
+                for names in groups.values()
+                if all(n in shadowed and n not in new_indexes for n in names)
+                for name in names
+            ]
+            if dropped:
+                # Copy last: copying keeps each retained index group whole.
+                reindexed = (
+                    self.drop_indexes(dropped)
+                    ._overwrite_indexes(new_indexes, new_variables)
+                    .copy(deep=aligner.copy)
+                )
+            elif set(new_indexes) - set(self._indexes) or (
                 aligner.shadowed_keys
                 and any(
                     self._indexes.get(name) is not idx
