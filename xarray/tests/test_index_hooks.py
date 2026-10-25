@@ -637,6 +637,68 @@ def test_arithmetic_keeps_joint_index_in_both_orders(reverse: bool) -> None:
     assert isinstance(result.xindexes["x"], OverlappingIndex)
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("operation", ["arithmetic", "where", "dataset", "merge"])
+def test_lower_dimensional_subset_keeps_joint_index(
+    operation: str, reverse: bool
+) -> None:
+    joint = make_array().rename("joint")
+    subset = xr.DataArray(
+        np.ones(3), dims="x", coords={"x": [10, 20, 30]}, name="subset"
+    )
+    first, second = (subset, joint) if reverse else (joint, subset)
+    if operation == "arithmetic":
+        result = first + second
+    elif operation == "where":
+        result = xr.where(first > 0, first, second)
+    elif operation == "dataset":
+        result = xr.Dataset({"first": first, "second": second})
+    else:
+        result = xr.merge([first, second])
+    assert result.xindexes["x"] is result.xindexes["y"]
+    assert isinstance(result.xindexes["x"], OverlappingIndex)
+
+
+def test_lower_dimensional_subset_is_copied() -> None:
+    subset = xr.DataArray(np.ones(3), dims="x", coords={"x": [10, 20, 30]})
+    _, result = xr.align(make_array(), subset, copy=True)
+    assert not np.shares_memory(result.data, subset.data)
+    assert "x" not in result.xindexes
+
+
+class AcceptingIndex(TwoCoordinateIndex):
+    def join_overlapping(
+        self,
+        other_indexes: Mapping[Hashable, xr.Index],
+        *,
+        other_variables: Mapping[Hashable, xr.Variable],
+        how: JoinOptions | None,
+    ) -> tuple[xr.Index, Mapping[Hashable, xr.Index]] | None:
+        return self, other_indexes
+
+
+def test_partially_excluded_subset_index_is_kept_whole() -> None:
+    joint = xr.Dataset(coords={d: [0] for d in "xyz"})
+    joint = joint.drop_indexes(list("xyz")).set_xindex(list("xyz"), AcceptingIndex)
+    subset = xr.Dataset(coords={d: [0] for d in "xy"})
+    subset = subset.drop_indexes(list("xy")).set_xindex(list("xy"), AcceptingIndex)
+    _, result = xr.align(joint, subset, exclude={"x"}, copy=False)
+    assert result.xindexes["x"] is result.xindexes["y"]
+    assert result.xindexes["x"].equals(subset.xindexes["x"])
+
+
+def test_dropping_one_subset_index_keeps_another_whole() -> None:
+    joint = xr.Dataset(coords={d: [0] for d in "xyzuv"})
+    joint = joint.drop_indexes(list("xyzuv"))
+    joint = joint.set_xindex(list("xyz"), AcceptingIndex)
+    joint = joint.set_xindex(list("uv"), AcceptingIndex)
+    subset = xr.Dataset(coords={d: [0] for d in "xyu"})
+    subset = subset.drop_indexes(list("xy")).set_xindex(list("xy"), AcceptingIndex)
+    _, result = xr.align(joint, subset, exclude={"x"}, copy=False)
+    assert "u" not in result.xindexes
+    assert result.xindexes["x"] is result.xindexes["y"]
+
+
 def test_overlapping_index_joins_two_subset_coordinates() -> None:
     joint = make_array()
     subset = xr.DataArray(
